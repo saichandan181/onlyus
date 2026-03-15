@@ -1,0 +1,1084 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Only Us - API & Chat Test UI</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f0f0f;
+            color: #e0e0e0;
+            padding: 20px;
+        }
+        .container { max-width: 1400px; margin: 0 auto; }
+        h1 { color: #ff6b9d; margin-bottom: 20px; }
+        h2 { color: #ff6b9d; margin: 20px 0 10px; font-size: 18px; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .section {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 20px;
+        }
+        .full-width { grid-column: 1 / -1; }
+        input, textarea, button, select {
+            width: 100%;
+            padding: 10px;
+            margin: 5px 0;
+            background: #2a2a2a;
+            border: 1px solid #444;
+            border-radius: 4px;
+            color: #e0e0e0;
+            font-size: 14px;
+        }
+        button {
+            background: #ff6b9d;
+            color: white;
+            cursor: pointer;
+            font-weight: 600;
+            transition: background 0.2s;
+        }
+        button:hover { background: #ff4d7d; }
+        button:disabled { background: #555; cursor: not-allowed; }
+        .response {
+            background: #0a0a0a;
+            border: 1px solid #333;
+            border-radius: 4px;
+            padding: 10px;
+            margin: 10px 0;
+            max-height: 200px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+        }
+        .success { color: #4ade80; }
+        .error { color: #f87171; }
+        .info { color: #60a5fa; }
+        .token-display {
+            background: #2a2a2a;
+            padding: 10px;
+            border-radius: 4px;
+            word-break: break-all;
+            font-size: 11px;
+            margin: 10px 0;
+        }
+        .chat-messages {
+            background: #0a0a0a;
+            border: 1px solid #333;
+            border-radius: 4px;
+            padding: 10px;
+            height: 300px;
+            overflow-y: auto;
+            margin: 10px 0;
+        }
+        .message {
+            padding: 8px;
+            margin: 5px 0;
+            border-radius: 4px;
+            background: #1a1a1a;
+            position: relative;
+        }
+        .message.sent { background: #2a4a2a; text-align: right; }
+        .message.received { background: #2a2a4a; }
+        .message-content { margin: 5px 0; }
+        .message-id { 
+            font-size: 10px; 
+            color: #666; 
+            font-family: monospace;
+        }
+        .message-actions {
+            display: none;
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            gap: 5px;
+        }
+        .message:hover .message-actions {
+            display: flex;
+        }
+        .react-btn {
+            background: #3a3a3a;
+            border: 1px solid #555;
+            border-radius: 4px;
+            padding: 2px 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        .react-btn:hover {
+            background: #4a4a4a;
+            transform: scale(1.2);
+        }
+        .message-reactions {
+            display: flex;
+            gap: 5px;
+            margin-top: 5px;
+            flex-wrap: wrap;
+        }
+        .reaction-badge {
+            background: #3a3a3a;
+            border: 1px solid #555;
+            border-radius: 12px;
+            padding: 2px 8px;
+            font-size: 12px;
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+        }
+        .status { 
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            margin: 5px 0;
+        }
+        .status.online { background: #4ade80; color: #000; }
+        .status.offline { background: #666; color: #fff; }
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .tab {
+            padding: 8px 16px;
+            background: #2a2a2a;
+            border: 1px solid #444;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .tab.active { background: #ff6b9d; color: white; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔒 Only Us - API & Chat Test UI</h1>
+        
+        <div style="background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 15px; margin-bottom: 20px;">
+            <div style="display: flex; gap: 10px; align-items: center;">
+                <input type="text" id="api-base" value="http://localhost:8000" style="flex: 1;" placeholder="API Base URL">
+                <button onclick="updateApiBase()" style="width: auto; padding: 10px 20px;">Update URL</button>
+                <button onclick="testConnection()" style="width: auto; padding: 10px 20px;">Test Connection</button>
+                <span id="connection-status" class="status offline">Not Tested</span>
+            </div>
+        </div>
+        
+        <div class="grid">
+            <!-- Auth Section -->
+            <div class="section">
+                <h2>🔐 Authentication</h2>
+                <div class="tabs">
+                    <div class="tab active" onclick="switchTab('auth', 'register')">Register</div>
+                    <div class="tab" onclick="switchTab('auth', 'login')">Login</div>
+                </div>
+                
+                <div id="auth-register" class="tab-content active">
+                    <input type="text" id="reg-name" placeholder="Name" value="Test User">
+                    <input type="email" id="reg-email" placeholder="Email" value="test@example.com">
+                    <input type="password" id="reg-password" placeholder="Password" value="password123">
+                    <input type="text" id="reg-pubkey" placeholder="Public Key (optional)" value="test-public-key-123">
+                    <button onclick="register()">Register</button>
+                </div>
+                
+                <div id="auth-login" class="tab-content">
+                    <input type="email" id="login-email" placeholder="Email" value="test@example.com">
+                    <input type="password" id="login-password" placeholder="Password" value="password123">
+                    <button onclick="login()">Login</button>
+                </div>
+                
+                <div class="response" id="auth-response"></div>
+                <div class="token-display" id="token-display">Token: Not logged in</div>
+            </div>
+
+            <!-- User Profile Section -->
+            <div class="section">
+                <h2>👤 User Profile</h2>
+                <button onclick="getMe()">Get My Profile</button>
+                <input type="text" id="update-name" placeholder="New Name">
+                <input type="text" id="update-avatar" placeholder="New Avatar URL">
+                <button onclick="updateProfile()">Update Profile</button>
+                <button onclick="logout()">Logout</button>
+                <div class="response" id="profile-response"></div>
+            </div>
+
+            <!-- Pairing Section -->
+            <div class="section">
+                <h2>💑 Pairing</h2>
+                <button onclick="generateCode()">Generate Pairing Code</button>
+                <input type="text" id="pair-code" placeholder="Enter 6-digit code">
+                <button onclick="joinPair()">Join with Code</button>
+                <button onclick="getPairStatus()">Get Pair Status</button>
+                <button onclick="getPartner()">Get Partner Info</button>
+                <input type="date" id="anniversary" placeholder="Anniversary Date">
+                <button onclick="updateAnniversary()">Update Anniversary</button>
+                <button onclick="unpair()">Unpair</button>
+                <div class="response" id="pair-response"></div>
+            </div>
+
+            <!-- User Search Section -->
+            <div class="section">
+                <h2>🔍 User Search</h2>
+                <input type="text" id="search-query" placeholder="Search by name or email">
+                <button onclick="searchUsers()">Search</button>
+                <input type="text" id="push-token" placeholder="Push Token">
+                <button onclick="updatePushToken()">Update Push Token</button>
+                <input type="text" id="new-pubkey" placeholder="New Public Key">
+                <button onclick="updatePublicKey()">Update Public Key</button>
+                <div class="response" id="users-response"></div>
+            </div>
+
+            <!-- Socket.IO Chat Section -->
+            <div class="section full-width">
+                <h2>💬 Real-time Chat (Socket.IO)</h2>
+                <div style="display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap;">
+                    <button onclick="connectSocket()">Connect to Chat</button>
+                    <button onclick="disconnectSocket()">Disconnect</button>
+                    <button onclick="checkSocketStatus()">Check Status</button>
+                    <button onclick="debugRooms()">Debug Rooms</button>
+                    <span class="status" id="socket-status">Disconnected</span>
+                    <span class="status" id="partner-status">Partner: Unknown</span>
+                </div>
+                
+                <div class="chat-messages" id="chat-messages"></div>
+                
+                <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                    <input type="text" id="chat-message" placeholder="Type a message..." onkeypress="if(event.key==='Enter') sendMessage()" style="flex: 1;">
+                    <button onclick="sendMessage()" style="width: auto; padding: 10px 20px;">Send</button>
+                </div>
+                
+                <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 10px;">
+                    <input type="file" id="media-file" accept="image/*,video/*,audio/*" style="flex: 1;">
+                    <input type="text" id="media-caption" placeholder="Caption (optional)" style="flex: 1;">
+                    <button onclick="sendMedia()" style="width: auto; padding: 10px 20px;">Send Media</button>
+                </div>
+                
+                <div id="media-progress" style="display: none; background: #2a2a2a; padding: 10px; border-radius: 4px; margin-bottom: 10px;">
+                    <div style="margin-bottom: 5px;">Uploading: <span id="progress-text">0%</span></div>
+                    <div style="background: #0a0a0a; height: 20px; border-radius: 4px; overflow: hidden;">
+                        <div id="progress-bar" style="background: #ff6b9d; height: 100%; width: 0%; transition: width 0.3s;"></div>
+                    </div>
+                </div>
+                
+                <div style="margin-top: 15px;">
+                    <h3 style="color: #ff6b9d; font-size: 14px;">Advanced Actions:</h3>
+                    <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 10px;">
+                        <button onclick="sendTyping(true)">Start Typing</button>
+                        <button onclick="sendTyping(false)">Stop Typing</button>
+                    </div>
+                    <div style="margin-top: 10px; padding: 10px; background: #2a2a2a; border-radius: 4px; font-size: 12px;">
+                        <strong style="color: #60a5fa;">💡 Tip:</strong> Hover over any message to see reaction buttons (❤️ 👍 😂 😮 😢 🔥) and delete option!
+                    </div>
+                </div>
+                
+                <div style="margin-top: 15px; padding: 10px; background: #2a2a2a; border-radius: 4px; font-size: 12px;">
+                    <strong style="color: #ff6b9d;">🔧 Troubleshooting:</strong>
+                    <ol style="margin: 10px 0 0 20px; line-height: 1.6;">
+                        <li>Make sure both users are logged in (check token display)</li>
+                        <li>Verify both users are paired (use "Get Pair Status")</li>
+                        <li>Click "Connect to Chat" for both users</li>
+                        <li>Check browser console (F12) for detailed logs</li>
+                        <li>Look for "Connected to chat server" message</li>
+                        <li>Verify partner status shows "Online" when both connected</li>
+                        <li>Check server terminal for connection logs</li>
+                    </ol>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let API_BASE = 'http://localhost:8000';
+        let token = null;
+        let socket = null;
+        let lastMessageId = null;
+        let messages = {}; // Store messages with their IDs and reactions
+
+        // Update API base URL
+        function updateApiBase() {
+            API_BASE = document.getElementById('api-base').value.replace(/\/$/, '');
+            document.getElementById('connection-status').textContent = 'Not Tested';
+            document.getElementById('connection-status').className = 'status offline';
+        }
+
+        // Test connection to server
+        async function testConnection() {
+            const statusEl = document.getElementById('connection-status');
+            statusEl.textContent = 'Testing...';
+            statusEl.className = 'status';
+            
+            try {
+                const response = await fetch(`${API_BASE}/`);
+                const data = await response.json();
+                
+                if (response.ok && data.status === 'running') {
+                    statusEl.textContent = `Connected - ${data.app} v${data.version}`;
+                    statusEl.className = 'status online';
+                } else {
+                    statusEl.textContent = 'Server Error';
+                    statusEl.className = 'status offline';
+                }
+            } catch (error) {
+                statusEl.textContent = `Connection Failed: ${error.message}`;
+                statusEl.className = 'status offline';
+                console.error('Connection test failed:', error);
+            }
+        }
+
+        // Tab switching
+        function switchTab(section, tab) {
+            document.querySelectorAll(`#${section}-${tab}`).forEach(el => {
+                el.parentElement.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                el.parentElement.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            });
+            document.getElementById(`${section}-${tab}`).classList.add('active');
+            event.target.classList.add('active');
+        }
+
+        // Helper functions
+        function displayResponse(elementId, data, isError = false) {
+            const el = document.getElementById(elementId);
+            el.innerHTML = `<pre class="${isError ? 'error' : 'success'}">${JSON.stringify(data, null, 2)}</pre>`;
+        }
+
+        function updateTokenDisplay() {
+            document.getElementById('token-display').textContent = token ? `Token: ${token.substring(0, 50)}...` : 'Token: Not logged in';
+        }
+
+        async function apiCall(endpoint, method = 'GET', body = null, useAuth = false) {
+            const options = {
+                method,
+                headers: { 'Content-Type': 'application/json' }
+            };
+            
+            if (useAuth && token) {
+                options.headers['Authorization'] = `Bearer ${token}`;
+            }
+            
+            if (body) {
+                options.body = JSON.stringify(body);
+            }
+            
+            try {
+                console.log(`API Call: ${method} ${API_BASE}${endpoint}`, body);
+                const response = await fetch(`${API_BASE}${endpoint}`, options);
+                
+                let data;
+                const contentType = response.headers.get('content-type');
+                if (contentType && contentType.includes('application/json')) {
+                    data = await response.json();
+                } else {
+                    const text = await response.text();
+                    data = { message: text };
+                }
+                
+                console.log('API Response:', response.status, data);
+                
+                if (!response.ok) {
+                    throw data;
+                }
+                
+                return { success: true, data };
+            } catch (error) {
+                console.error('API Error:', error);
+                return { success: false, error: error.message || error };
+            }
+        }
+
+        // Auth functions
+        async function register() {
+            const name = document.getElementById('reg-name').value;
+            const email = document.getElementById('reg-email').value;
+            const password = document.getElementById('reg-password').value;
+            const public_key = document.getElementById('reg-pubkey').value;
+            
+            if (!name || !email || !password) {
+                displayResponse('auth-response', { error: 'Please fill in all required fields' }, true);
+                return;
+            }
+            
+            const body = { name, email, password };
+            if (public_key) {
+                body.public_key = public_key;
+            }
+            
+            const result = await apiCall('/auth/register', 'POST', body);
+            
+            if (result.success) {
+                token = result.data.token;
+                updateTokenDisplay();
+            }
+            
+            displayResponse('auth-response', result.success ? result.data : result.error, !result.success);
+        }
+
+        async function login() {
+            const result = await apiCall('/auth/login', 'POST', {
+                email: document.getElementById('login-email').value,
+                password: document.getElementById('login-password').value
+            });
+            
+            if (result.success) {
+                token = result.data.token;
+                updateTokenDisplay();
+            }
+            
+            displayResponse('auth-response', result.success ? result.data : result.error, !result.success);
+        }
+
+        async function getMe() {
+            const result = await apiCall('/auth/me', 'GET', null, true);
+            displayResponse('profile-response', result.success ? result.data : result.error, !result.success);
+        }
+
+        async function updateProfile() {
+            const body = {};
+            const name = document.getElementById('update-name').value;
+            const avatar = document.getElementById('update-avatar').value;
+            
+            if (name) body.name = name;
+            if (avatar) body.avatar = avatar;
+            
+            const result = await apiCall('/auth/me', 'PATCH', body, true);
+            displayResponse('profile-response', result.success ? result.data : result.error, !result.success);
+        }
+
+        async function logout() {
+            const result = await apiCall('/auth/logout', 'POST', null, true);
+            if (result.success) {
+                token = null;
+                updateTokenDisplay();
+            }
+            displayResponse('profile-response', result.success ? result.data : result.error, !result.success);
+        }
+
+        // Pairing functions
+        async function generateCode() {
+            const result = await apiCall('/pair/generate', 'POST', null, true);
+            displayResponse('pair-response', result.success ? result.data : result.error, !result.success);
+        }
+
+        async function joinPair() {
+            const code = document.getElementById('pair-code').value;
+            const result = await apiCall('/pair/join', 'POST', { code }, true);
+            displayResponse('pair-response', result.success ? result.data : result.error, !result.success);
+        }
+
+        async function getPairStatus() {
+            const result = await apiCall('/pair/status', 'GET', null, true);
+            displayResponse('pair-response', result.success ? result.data : result.error, !result.success);
+        }
+
+        async function getPartner() {
+            const result = await apiCall('/pair/partner', 'GET', null, true);
+            displayResponse('pair-response', result.success ? result.data : result.error, !result.success);
+        }
+
+        async function updateAnniversary() {
+            const date = document.getElementById('anniversary').value;
+            const result = await apiCall('/pair/anniversary', 'PATCH', { anniversary_date: date }, true);
+            displayResponse('pair-response', result.success ? result.data : result.error, !result.success);
+        }
+
+        async function unpair() {
+            if (!confirm('Are you sure you want to unpair?')) return;
+            const result = await apiCall('/pair/unpair', 'DELETE', null, true);
+            displayResponse('pair-response', result.success ? result.data : result.error, !result.success);
+        }
+
+        // User functions
+        async function searchUsers() {
+            const query = document.getElementById('search-query').value;
+            const result = await apiCall(`/users/search?q=${encodeURIComponent(query)}`, 'GET', null, true);
+            displayResponse('users-response', result.success ? result.data : result.error, !result.success);
+        }
+
+        async function updatePushToken() {
+            const pushToken = document.getElementById('push-token').value;
+            const result = await apiCall('/users/push-token', 'PATCH', { push_token: pushToken }, true);
+            displayResponse('users-response', result.success ? result.data : result.error, !result.success);
+        }
+
+        async function updatePublicKey() {
+            const pubKey = document.getElementById('new-pubkey').value;
+            const result = await apiCall('/users/public-key', 'PATCH', { public_key: pubKey }, true);
+            displayResponse('users-response', result.success ? result.data : result.error, !result.success);
+        }
+
+        // Socket.IO Chat functions
+        function connectSocket() {
+            if (!token) {
+                addChatMessage('error', 'Please login first!');
+                return;
+            }
+
+            if (socket && socket.connected) {
+                addChatMessage('info', 'Already connected');
+                return;
+            }
+
+            console.log('Connecting to Socket.IO with token:', token.substring(0, 20) + '...');
+
+            socket = io(API_BASE, {
+                query: { token },
+                auth: { token },
+                transports: ['websocket', 'polling'],
+                reconnection: true,
+                reconnectionDelay: 1000,
+                reconnectionAttempts: 5
+            });
+
+            socket.on('connect', () => {
+                console.log('Socket.IO connected, socket ID:', socket.id);
+                document.getElementById('socket-status').textContent = 'Connected';
+                document.getElementById('socket-status').className = 'status online';
+                addChatMessage('success', `Connected to chat server (ID: ${socket.id})`);
+            });
+
+            socket.on('connect_error', (error) => {
+                console.error('Socket.IO connection error:', error);
+                addChatMessage('error', `Connection error: ${error.message}`);
+            });
+
+            socket.on('disconnect', (reason) => {
+                console.log('Socket.IO disconnected, reason:', reason);
+                document.getElementById('socket-status').textContent = 'Disconnected';
+                document.getElementById('socket-status').className = 'status offline';
+                addChatMessage('error', `Disconnected: ${reason}`);
+            });
+
+            socket.on('error', (data) => {
+                console.error('Socket.IO error event:', data);
+                addChatMessage('error', `Server error: ${JSON.stringify(data)}`);
+            });
+
+            socket.on('partner:status', (data) => {
+                console.log('Partner status:', data);
+                updatePartnerStatus(data.online);
+                addChatMessage('info', `Partner is ${data.online ? 'online' : 'offline'}`);
+            });
+
+            socket.on('partner:online', (data) => {
+                console.log('Partner came online:', data);
+                updatePartnerStatus(true);
+                addChatMessage('info', `${data.name} came online`);
+            });
+
+            socket.on('partner:offline', () => {
+                console.log('Partner went offline');
+                updatePartnerStatus(false);
+                addChatMessage('info', 'Partner went offline');
+            });
+
+            socket.on('msg:new', (data) => {
+                console.log('New message received:', data);
+                const msgId = data.id;
+                const content = data.encrypted_payload || JSON.stringify(data);
+                const sender = data.sender?.name || 'Partner';
+                
+                // Store message
+                messages[msgId] = {
+                    id: msgId,
+                    content: content,
+                    sender: sender,
+                    type: 'received',
+                    reactions: {}
+                };
+                
+                addChatMessage('received', content, msgId);
+            });
+
+            socket.on('msg:deleted', (data) => {
+                console.log('Message deleted:', data);
+                const msgElement = document.querySelector(`[data-msg-id="${data.msgId}"]`);
+                if (msgElement) {
+                    msgElement.style.opacity = '0.5';
+                    msgElement.innerHTML = `<small>${new Date().toLocaleTimeString()}</small><br><em style="color: #666;">Message deleted</em>`;
+                }
+                delete messages[data.msgId];
+            });
+
+            socket.on('msg:reaction', (data) => {
+                console.log('Message reaction:', data);
+                const msgId = data.msgId;
+                const emoji = data.emoji;
+                
+                // Update stored message reactions
+                if (messages[msgId]) {
+                    if (!messages[msgId].reactions) messages[msgId].reactions = {};
+                    messages[msgId].reactions[emoji] = (messages[msgId].reactions[emoji] || 0) + 1;
+                }
+                
+                // Update UI
+                updateMessageReactions(msgId, emoji);
+                addChatMessage('info', `Partner reacted ${emoji} to a message`);
+            });
+
+            socket.on('typing:start', () => {
+                console.log('Partner typing start');
+                addChatMessage('info', 'Partner is typing...');
+            });
+
+            socket.on('typing:stop', () => {
+                console.log('Partner typing stop');
+                addChatMessage('info', 'Partner stopped typing');
+            });
+
+            socket.on('media:incoming', (data) => {
+                console.log('Incoming media:', data);
+                addChatMessage('info', `📥 Incoming ${data.type}: ${data.fileName || 'media'} (${data.totalChunks} chunks)`);
+                
+                // Initialize receiver buffer
+                if (!window.mediaReceiveBuffers) window.mediaReceiveBuffers = {};
+                window.mediaReceiveBuffers[data.transferId] = {
+                    chunks: new Array(data.totalChunks),
+                    metadata: data,
+                    received: 0
+                };
+            });
+
+            socket.on('media:chunk', (data) => {
+                console.log('Media chunk received:', data.index);
+                
+                if (window.mediaReceiveBuffers && window.mediaReceiveBuffers[data.transferId]) {
+                    const buffer = window.mediaReceiveBuffers[data.transferId];
+                    buffer.chunks[data.index] = data.data;
+                    buffer.received++;
+                    
+                    const progress = Math.round((buffer.received / buffer.chunks.length) * 100);
+                    addChatMessage('info', `📥 Receiving: ${progress}%`);
+                }
+            });
+
+            socket.on('media:complete', (data) => {
+                console.log('Media complete:', data);
+                addChatMessage('success', `✅ Media transfer complete: ${data.transferId}`);
+                
+                // Reconstruct the file
+                if (window.mediaReceiveBuffers && window.mediaReceiveBuffers[data.transferId]) {
+                    const buffer = window.mediaReceiveBuffers[data.transferId];
+                    const blob = new Blob(buffer.chunks.map(chunk => {
+                        const binary = atob(chunk);
+                        const array = new Uint8Array(binary.length);
+                        for (let i = 0; i < binary.length; i++) {
+                            array[i] = binary.charCodeAt(i);
+                        }
+                        return array;
+                    }), { type: buffer.metadata.mimeType });
+                    
+                    // Create download link
+                    const url = URL.createObjectURL(blob);
+                    const link = document.createElement('a');
+                    link.href = url;
+                    link.download = buffer.metadata.fileName || 'media';
+                    link.textContent = `Download ${buffer.metadata.fileName}`;
+                    link.style.color = '#60a5fa';
+                    
+                    const messageDiv = document.createElement('div');
+                    messageDiv.className = 'message received';
+                    messageDiv.innerHTML = `<small>${new Date().toLocaleTimeString()}</small><br>`;
+                    if (buffer.metadata.caption) {
+                        messageDiv.innerHTML += `${buffer.metadata.caption}<br>`;
+                    }
+                    messageDiv.appendChild(link);
+                    
+                    document.getElementById('chat-messages').appendChild(messageDiv);
+                    
+                    // Cleanup
+                    delete window.mediaReceiveBuffers[data.transferId];
+                }
+            });
+
+            socket.on('media:progress', (data) => {
+                console.log('Media progress:', data);
+                updateMediaProgress(data.progress);
+            });
+
+            socket.on('media:resend_request', (data) => {
+                console.log('Media resend request:', data);
+                addChatMessage('info', `Partner requesting media resend: ${data.transferId}`);
+            });
+
+            socket.on('media:unavailable', (data) => {
+                console.log('Media unavailable:', data);
+                addChatMessage('error', `Media unavailable: ${data.reason}`);
+            });
+
+            socket.on('media:pending', (data) => {
+                console.log('Pending media:', data);
+                addChatMessage('info', `Pending media: ${data.length} items`);
+            });
+
+            socket.on('mood:update', (data) => {
+                console.log('Mood update:', data);
+                addChatMessage('info', `Partner mood: ${data.mood}`);
+            });
+
+            socket.on('debug:response', (data) => {
+                console.log('Debug response:', data);
+                addChatMessage('info', `Debug: ${JSON.stringify(data, null, 2)}`);
+            });
+
+            // Log all events for debugging
+            socket.onAny((eventName, ...args) => {
+                console.log(`Socket event: ${eventName}`, args);
+            });
+        }
+
+        function disconnectSocket() {
+            if (socket) {
+                socket.disconnect();
+                socket = null;
+            }
+        }
+
+        function checkSocketStatus() {
+            if (!socket) {
+                addChatMessage('info', 'Socket not initialized');
+                return;
+            }
+            
+            const status = {
+                connected: socket.connected,
+                id: socket.id,
+                transport: socket.io?.engine?.transport?.name,
+                token: token ? 'Present' : 'Missing'
+            };
+            
+            console.log('Socket status:', status);
+            addChatMessage('info', `Status: ${JSON.stringify(status, null, 2)}`);
+        }
+
+        function debugRooms() {
+            if (!socket || !socket.connected) {
+                addChatMessage('error', 'Not connected to chat server');
+                return;
+            }
+            
+            console.log('Requesting room debug info...');
+            socket.emit('debug:rooms', {});
+        }
+
+        function sendMessage() {
+            const input = document.getElementById('chat-message');
+            const message = input.value.trim();
+            
+            if (!message) {
+                addChatMessage('error', 'Message cannot be empty');
+                return;
+            }
+            
+            if (!socket || !socket.connected) {
+                addChatMessage('error', 'Not connected to chat server');
+                return;
+            }
+
+            lastMessageId = `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            
+            const payload = {
+                id: lastMessageId,
+                encrypted_payload: message,
+                time: new Date().toISOString()
+            };
+            
+            console.log('Sending message:', payload);
+            
+            socket.emit('msg:text', payload, (ack) => {
+                console.log('Message acknowledgment:', ack);
+            });
+
+            // Store sent message
+            messages[lastMessageId] = {
+                id: lastMessageId,
+                content: message,
+                type: 'sent',
+                reactions: {}
+            };
+
+            addChatMessage('sent', message, lastMessageId);
+            input.value = '';
+        }
+
+        function sendTyping(isTyping) {
+            if (!socket || !socket.connected) {
+                addChatMessage('error', 'Not connected to chat server');
+                return;
+            }
+            console.log(`Sending typing ${isTyping ? 'start' : 'stop'}`);
+            socket.emit(isTyping ? 'typing:start' : 'typing:stop', {});
+        }
+
+        function deleteMessage() {
+            if (!lastMessageId) {
+                addChatMessage('error', 'No message to delete');
+                return;
+            }
+            
+            if (!socket || !socket.connected) {
+                addChatMessage('error', 'Not connected to chat server');
+                return;
+            }
+            
+            const payload = {
+                msgId: lastMessageId,
+                time: new Date().toISOString()
+            };
+            
+            console.log('Deleting message:', payload);
+            socket.emit('msg:delete', payload);
+            
+            // Update UI
+            const msgElement = document.querySelector(`[data-msg-id="${lastMessageId}"]`);
+            if (msgElement) {
+                msgElement.style.opacity = '0.5';
+                msgElement.querySelector('.message-content').innerHTML = '<em style="color: #666;">Message deleted</em>';
+            }
+            
+            delete messages[lastMessageId];
+        }
+
+        function reactToMessage(msgId, emoji) {
+            if (!socket || !socket.connected) {
+                addChatMessage('error', 'Not connected to chat server');
+                return;
+            }
+            
+            const payload = {
+                msgId: msgId,
+                emoji: emoji,
+                time: new Date().toISOString()
+            };
+            
+            console.log('Reacting to message:', payload);
+            socket.emit('msg:react', payload);
+            
+            // Update local message reactions
+            if (messages[msgId]) {
+                if (!messages[msgId].reactions) messages[msgId].reactions = {};
+                messages[msgId].reactions[emoji] = (messages[msgId].reactions[emoji] || 0) + 1;
+            }
+            
+            // Update UI
+            updateMessageReactions(msgId, emoji);
+        }
+
+        function updateMessageReactions(msgId, emoji) {
+            const msgElement = document.querySelector(`[data-msg-id="${msgId}"]`);
+            if (!msgElement) return;
+            
+            let reactionsDiv = msgElement.querySelector('.message-reactions');
+            if (!reactionsDiv) {
+                reactionsDiv = document.createElement('div');
+                reactionsDiv.className = 'message-reactions';
+                msgElement.appendChild(reactionsDiv);
+            }
+            
+            // Get all reactions for this message
+            const reactions = messages[msgId]?.reactions || {};
+            
+            // Rebuild reactions display
+            reactionsDiv.innerHTML = '';
+            for (const [reactionEmoji, count] of Object.entries(reactions)) {
+                const badge = document.createElement('span');
+                badge.className = 'reaction-badge';
+                badge.innerHTML = `${reactionEmoji} <span style="color: #999;">${count}</span>`;
+                reactionsDiv.appendChild(badge);
+            }
+        }
+
+        function addChatMessage(type, text, msgId = null) {
+            const messagesDiv = document.getElementById('chat-messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}`;
+            
+            if (msgId) {
+                messageDiv.setAttribute('data-msg-id', msgId);
+                
+                // Add reaction buttons
+                const actionsDiv = document.createElement('div');
+                actionsDiv.className = 'message-actions';
+                
+                const emojis = ['❤️', '👍', '😂', '😮', '😢', '🔥'];
+                emojis.forEach(emoji => {
+                    const btn = document.createElement('button');
+                    btn.className = 'react-btn';
+                    btn.textContent = emoji;
+                    btn.onclick = (e) => {
+                        e.stopPropagation();
+                        reactToMessage(msgId, emoji);
+                    };
+                    actionsDiv.appendChild(btn);
+                });
+                
+                // Add delete button for sent messages
+                if (type === 'sent') {
+                    const deleteBtn = document.createElement('button');
+                    deleteBtn.className = 'react-btn';
+                    deleteBtn.textContent = '🗑️';
+                    deleteBtn.onclick = (e) => {
+                        e.stopPropagation();
+                        const payload = {
+                            msgId: msgId,
+                            time: new Date().toISOString()
+                        };
+                        socket.emit('msg:delete', payload);
+                        messageDiv.style.opacity = '0.5';
+                        messageDiv.querySelector('.message-content').innerHTML = '<em style="color: #666;">Message deleted</em>';
+                        delete messages[msgId];
+                    };
+                    actionsDiv.appendChild(deleteBtn);
+                }
+                
+                messageDiv.appendChild(actionsDiv);
+            }
+            
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content';
+            contentDiv.innerHTML = `<small>${new Date().toLocaleTimeString()}</small><br>${text}`;
+            messageDiv.appendChild(contentDiv);
+            
+            if (msgId) {
+                const idDiv = document.createElement('div');
+                idDiv.className = 'message-id';
+                idDiv.textContent = `ID: ${msgId.substring(0, 20)}...`;
+                messageDiv.appendChild(idDiv);
+            }
+            
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        function updatePartnerStatus(online) {
+            const statusEl = document.getElementById('partner-status');
+            statusEl.textContent = `Partner: ${online ? 'Online' : 'Offline'}`;
+            statusEl.className = `status ${online ? 'online' : 'offline'}`;
+        }
+
+        function updateMediaProgress(progress) {
+            const progressDiv = document.getElementById('media-progress');
+            const progressBar = document.getElementById('progress-bar');
+            const progressText = document.getElementById('progress-text');
+            
+            if (progress > 0 && progress < 100) {
+                progressDiv.style.display = 'block';
+                progressBar.style.width = progress + '%';
+                progressText.textContent = progress + '%';
+            } else if (progress >= 100) {
+                setTimeout(() => {
+                    progressDiv.style.display = 'none';
+                    progressBar.style.width = '0%';
+                }, 1000);
+            }
+        }
+
+        async function sendMedia() {
+            const fileInput = document.getElementById('media-file');
+            const captionInput = document.getElementById('media-caption');
+            
+            if (!fileInput.files || !fileInput.files[0]) {
+                addChatMessage('error', 'Please select a file');
+                return;
+            }
+            
+            if (!socket || !socket.connected) {
+                addChatMessage('error', 'Not connected to chat server');
+                return;
+            }
+            
+            const file = fileInput.files[0];
+            const caption = captionInput.value.trim();
+            
+            // Validate file size (max 10MB for testing)
+            if (file.size > 10 * 1024 * 1024) {
+                addChatMessage('error', 'File too large (max 10MB)');
+                return;
+            }
+            
+            addChatMessage('info', `📤 Preparing to send: ${file.name} (${(file.size / 1024).toFixed(2)} KB)`);
+            
+            try {
+                // Read file as base64
+                const reader = new FileReader();
+                reader.onload = async (e) => {
+                    const base64Data = e.target.result.split(',')[1];
+                    
+                    // Split into chunks (64KB each)
+                    const CHUNK_SIZE = 64 * 1024;
+                    const chunks = [];
+                    for (let i = 0; i < base64Data.length; i += CHUNK_SIZE) {
+                        chunks.push(base64Data.substring(i, i + CHUNK_SIZE));
+                    }
+                    
+                    const transferId = `transfer-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                    
+                    // Determine media type
+                    let mediaType = 'file';
+                    if (file.type.startsWith('image/')) mediaType = 'image';
+                    else if (file.type.startsWith('video/')) mediaType = 'video';
+                    else if (file.type.startsWith('audio/')) mediaType = 'audio';
+                    
+                    // Send start event
+                    console.log('Sending media:start', {
+                        transferId,
+                        totalChunks: chunks.length,
+                        type: mediaType,
+                        mimeType: file.type,
+                        fileName: file.name,
+                        caption: caption || undefined,
+                        time: new Date().toISOString()
+                    });
+                    
+                    socket.emit('media:start', {
+                        transferId,
+                        totalChunks: chunks.length,
+                        type: mediaType,
+                        mimeType: file.type,
+                        fileName: file.name,
+                        caption: caption || undefined,
+                        time: new Date().toISOString()
+                    });
+                    
+                    // Send chunks with delay
+                    for (let i = 0; i < chunks.length; i++) {
+                        socket.emit('media:chunk', {
+                            transferId,
+                            index: i,
+                            data: chunks[i]
+                        });
+                        
+                        // Small delay to avoid overwhelming the server
+                        if (i % 10 === 0) {
+                            await new Promise(resolve => setTimeout(resolve, 10));
+                        }
+                    }
+                    
+                    // Send done event
+                    socket.emit('media:done', {
+                        transferId,
+                        time: new Date().toISOString()
+                    });
+                    
+                    addChatMessage('sent', `📤 Sent ${mediaType}: ${file.name}${caption ? ' - ' + caption : ''}`);
+                    
+                    // Clear inputs
+                    fileInput.value = '';
+                    captionInput.value = '';
+                };
+                
+                reader.readAsDataURL(file);
+            } catch (error) {
+                console.error('Error sending media:', error);
+                addChatMessage('error', `Failed to send media: ${error.message}`);
+            }
+        }
+
+        // Test connection on page load
+        window.addEventListener('DOMContentLoaded', () => {
+            testConnection();
+        });
+    </script>
+</body>
+</html>
