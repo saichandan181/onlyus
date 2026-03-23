@@ -111,8 +111,8 @@ docker run -d \
 
 | Method | Endpoint | Auth | Request Body | Response | Description |
 |--------|----------|------|-------------|----------|-------------|
-| POST | `/auth/register` | ❌ | `{name, email, password, public_key?}` | `AuthResponse` | Register new user |
-| POST | `/auth/login` | ❌ | `{email, password}` | `AuthResponse` | Login |
+| POST | `/auth/register` | ✅ | `{name, email, password, public_key?}` | `AuthResponse` | Register new user |
+| POST | `/auth/login` | ✅ | `{email, password}` | `AuthResponse` | Login |
 | GET | `/auth/me` | ✅ | — | `UserResponse` | Get current user |
 | PATCH | `/auth/me` | ✅ | `{name?, avatar?}` | `UserResponse` | Update profile |
 | POST | `/auth/logout` | ✅ | — | `{success}` | Logout (clear online + push token) |
