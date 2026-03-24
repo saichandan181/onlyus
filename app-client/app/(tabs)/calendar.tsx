@@ -14,9 +14,8 @@ import DateTimePicker, {
   type DateTimePickerChangeEvent,
 } from '@react-native-community/datetimepicker';
 import { useFocusEffect } from 'expo-router';
-import { useColorScheme } from '@/hooks/use-color-scheme';
-import { useTabBarBottomInset } from '@/hooks/use-tab-bar-inset';
-import { Colors, Typography, BorderRadius } from '@/constants/theme';
+import { useThemeColors } from '@/hooks/use-theme-colors';
+import { Typography, BorderRadius } from '@/constants/theme';
 import { GlassCard } from '@/components/ui/GlassCard';
 import { GlassButton } from '@/components/ui/GlassButton';
 import { useAuthStore } from '@/stores/authStore';
@@ -42,10 +41,8 @@ function defaultDraftDate(): Date {
 }
 
 export default function CalendarScreen() {
-  const colorScheme = useColorScheme() ?? 'dark';
-  const colors = Colors[colorScheme];
+  const { colors, scheme } = useThemeColors();
   const insets = useSafeAreaInsets();
-  const tabBarBottom = useTabBarBottomInset();
   const { sharedSecret, token, isPaired } = useAuthStore();
   const { emitAnniversaryEncrypted } = useSocket(token);
   const savedAnniversaryIso = usePairLocalStore(s => s.anniversaryIso);
@@ -133,12 +130,7 @@ export default function CalendarScreen() {
     : [];
 
   return (
-    <View
-      style={[
-        styles.container,
-        { backgroundColor: colors.background, paddingBottom: tabBarBottom },
-      ]}
-    >
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
       <ScrollView
         contentContainerStyle={[
           styles.scrollContent,
@@ -206,7 +198,7 @@ export default function CalendarScreen() {
                 display="spinner"
                 onValueChange={handleValueChange}
                 maximumDate={new Date()}
-                themeVariant={colorScheme}
+                themeVariant={scheme}
                 style={styles.datePickerIOS}
               />
             ) : (

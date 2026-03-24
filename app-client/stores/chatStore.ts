@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { normalizeReactionKey } from '@/constants/theme';
 import { Message } from '@/services/api';
 import {
   saveMessage,
@@ -98,14 +99,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   addReactionToMessage: (msgId: string, reaction: string) => {
-    dbReact(msgId, reaction);
+    const key = normalizeReactionKey(reaction);
+    dbReact(msgId, key);
     set(state => ({
       messages: state.messages.map(m => {
         if (m.id === msgId) {
           let reactions: string[] = [];
           try { reactions = JSON.parse(m.reactions); } catch {}
-          if (!reactions.includes(reaction)) {
-            reactions.push(reaction);
+          if (!reactions.includes(key)) {
+            reactions.push(key);
           }
           return { ...m, reactions: JSON.stringify(reactions) };
         }

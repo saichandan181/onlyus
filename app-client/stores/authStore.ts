@@ -64,21 +64,22 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       // Check pairing
       try {
         const pairStatus = await api.getPairStatus();
+        const partner = pairStatus.paired ? pairStatus.partner : null;
         set({
           pairStatus,
           isPaired: pairStatus.paired,
-          partner: pairStatus.partner,
+          partner,
+          sharedSecret: null,
         });
-        useChatStore.getState().setPartnerOnline(pairStatus.partner?.is_online ?? false);
+        useChatStore.getState().setPartnerOnline(partner?.is_online ?? false);
+        const u = get().user;
+        if (pairStatus.paired && u?.public_key && partner?.public_key) {
+          const { derivePairSharedSecret } = await import('@/services/encryption');
+          const secret = await derivePairSharedSecret(u.public_key, partner.public_key);
+          set({ sharedSecret: secret });
+        }
       } catch {
-        // Not paired
-      }
-
-      const u = get().user;
-      if (u?.public_key && get().partner?.public_key) {
-        const { derivePairSharedSecret } = await import('@/services/encryption');
-        const secret = await derivePairSharedSecret(u.public_key, get().partner!.public_key!);
-        set({ sharedSecret: secret });
+        /* Network / server error — keep prior pair state */
       }
       await usePairLocalStore.getState().hydrate();
     } catch {
@@ -102,20 +103,24 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // Check pairing
     try {
       const pairStatus = await api.getPairStatus();
+      const partner = pairStatus.paired ? pairStatus.partner : null;
       set({
         pairStatus,
         isPaired: pairStatus.paired,
-        partner: pairStatus.partner,
+        partner,
+        sharedSecret: null,
       });
-      useChatStore.getState().setPartnerOnline(pairStatus.partner?.is_online ?? false);
+      useChatStore.getState().setPartnerOnline(partner?.is_online ?? false);
       const u = get().user;
-      if (u?.public_key && pairStatus.partner?.public_key) {
+      if (pairStatus.paired && u?.public_key && partner?.public_key) {
         const { derivePairSharedSecret } = await import('@/services/encryption');
-        const secret = await derivePairSharedSecret(u.public_key, pairStatus.partner.public_key);
+        const secret = await derivePairSharedSecret(u.public_key, partner.public_key);
         set({ sharedSecret: secret });
       }
       await usePairLocalStore.getState().hydrate();
-    } catch {}
+    } catch {
+      /* Transient errors: keep existing pair state */
+    }
   },
 
   register: async (name: string, email: string, password: string) => {
@@ -161,16 +166,18 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   refreshPairStatus: async () => {
     try {
       const pairStatus = await api.getPairStatus();
+      const partner = pairStatus.paired ? pairStatus.partner : null;
       set({
         pairStatus,
         isPaired: pairStatus.paired,
-        partner: pairStatus.partner,
+        partner,
+        sharedSecret: null,
       });
-      useChatStore.getState().setPartnerOnline(pairStatus.partner?.is_online ?? false);
+      useChatStore.getState().setPartnerOnline(partner?.is_online ?? false);
       const u = get().user;
-      if (u?.public_key && get().partner?.public_key) {
+      if (pairStatus.paired && u?.public_key && partner?.public_key) {
         const { derivePairSharedSecret } = await import('@/services/encryption');
-        const secret = await derivePairSharedSecret(u.public_key, get().partner!.public_key!);
+        const secret = await derivePairSharedSecret(u.public_key, partner.public_key);
         set({ sharedSecret: secret });
       }
       await usePairLocalStore.getState().hydrate();

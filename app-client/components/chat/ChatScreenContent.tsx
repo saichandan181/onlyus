@@ -6,6 +6,7 @@ import {
   TextInput,
   Pressable,
   KeyboardAvoidingView,
+  Keyboard,
   Platform,
   FlatList,
   useWindowDimensions,
@@ -13,6 +14,7 @@ import {
   Modal,
   Alert,
 } from 'react-native';
+import { Image as ExpoImage } from 'expo-image';
 import { BlurView } from 'expo-blur';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, {
@@ -31,13 +33,23 @@ import { StatusBar } from 'expo-status-bar';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
 import { getDocumentAsync } from 'expo-document-picker';
-import { Audio, Video, ResizeMode } from 'expo-av';
+import { Audio, Video, ResizeMode, type AVPlaybackStatus } from 'expo-av';
 import type { SFSymbol } from 'sf-symbols-typescript';
 import { createMessageId } from '@/utils/messageId';
 
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useThemeColors } from '@/hooks/use-theme-colors';
 import { useAccessibilitySettings } from '@/hooks/use-accessibility-settings';
-import { Colors, Typography, BorderRadius, MoodIcons, ReactionIcons } from '@/constants/theme';
+import {
+  Typography,
+  BorderRadius,
+  MoodIcons,
+  ReactionIcons,
+  normalizeReactionKey,
+  reactionPickerIconColor,
+  REACTION_PICKER_ICON_COLORS,
+  type AppThemeColors,
+} from '@/constants/theme';
+import { BubbleTailSvg } from '@/components/chat/BubbleTailSvg';
 import { IOS_PHOTO_LIBRARY_OPTIONS, IOS_VIDEO_LIBRARY_OPTIONS } from '@/constants/imagePicker';
 import { AppSymbol } from '@/components/ui/AppSymbol';
 import { useAuthStore } from '@/stores/authStore';
@@ -51,28 +63,94 @@ import {
   MAX_VOICE_RECORD_SECONDS,
   MAX_VIDEO_PICK_DURATION_SECONDS,
 } from '@/constants/mediaLimits';
+import { canDisplayAvatarUri } from '@/utils/avatarImage';
+import { AvatarFullScreenModal } from '@/components/ui/AvatarFullScreenModal';
 
-const TIMESTAMP_GAP_MS = 5 * 60 * 1000;
+const AUDIO_WAVEFORM = [10, 18, 14, 24, 16, 28, 20, 12, 22, 30, 18, 26, 14, 24, 16, 21];
 
 type ListRow =
-  | { rowKind: 'timestamp'; id: string; time: string }
+  | { rowKind: 'date'; id: string; time: string }
   | { rowKind: 'message'; id: string; message: Message };
 
 function buildRows(messages: Message[]): ListRow[] {
   const out: ListRow[] = [];
-  let last = 0;
+  let lastDayKey = '';
   for (const m of messages) {
-    const t = new Date(m.time).getTime();
-    if (out.length === 0 || t - last > TIMESTAMP_GAP_MS) {
-      out.push({ rowKind: 'timestamp', id: `ts-${m.id}`, time: m.time });
-      last = t;
+    const d = new Date(m.time);
+    const dayKey = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    if (dayKey !== lastDayKey) {
+      out.push({ rowKind: 'date', id: `date-${dayKey}-${m.id}`, time: m.time });
+      lastDayKey = dayKey;
     }
     out.push({ rowKind: 'message', id: m.id, message: m });
   }
   return out;
 }
 
-function GlassTypingDots({ colors }: { colors: (typeof Colors)['light'] }) {
+function isSameCalendarDay(left: Date, right: Date) {
+  return (
+    left.getFullYear() === right.getFullYear() &&
+    left.getMonth() === right.getMonth() &&
+    left.getDate() === right.getDate()
+  );
+}
+
+function formatClockTime(time: string) {
+  return new Date(time).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+function formatDuration(seconds?: number | null) {
+  if (seconds == null || Number.isNaN(seconds)) return '--:--';
+  const safeSeconds = Math.max(0, Math.round(seconds));
+  const mins = Math.floor(safeSeconds / 60);
+  const secs = safeSeconds % 60;
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
+
+function getDateSeparatorLabel(time: string) {
+  const date = new Date(time);
+  const today = new Date();
+  if (isSameCalendarDay(date, today)) return 'Today';
+
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  if (isSameCalendarDay(date, yesterday)) return 'Yesterday';
+
+  return date.toLocaleDateString(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    ...(date.getFullYear() !== today.getFullYear() ? { year: 'numeric' } : {}),
+  });
+}
+
+function inferMediaLabel(message: Message) {
+  if (message.file_name?.trim()) return message.file_name.trim();
+
+  if (message.media_uri && !message.media_uri.startsWith('data:')) {
+    try {
+      const withoutQuery = message.media_uri.split('?')[0];
+      const segment = withoutQuery.slice(withoutQuery.lastIndexOf('/') + 1);
+      const decoded = decodeURIComponent(segment);
+      if (decoded) return decoded;
+    } catch {
+      // Ignore parse failures and fall through to friendly labels.
+    }
+  }
+
+  switch (message.type) {
+    case 'image':
+      return 'Photo.jpg';
+    case 'video':
+      return 'Clip.mp4';
+    case 'audio':
+      return 'Voice note.m4a';
+    default:
+      return 'Attachment';
+  }
+}
+
+function TypingIndicatorBubble({ colors }: { colors: AppThemeColors }) {
   const dot1 = useSharedValue(0);
   const dot2 = useSharedValue(0);
   const dot3 = useSharedValue(0);
@@ -89,7 +167,7 @@ function GlassTypingDots({ colors }: { colors: (typeof Colors)['light'] }) {
       clearTimeout(t2);
       clearTimeout(t3);
     };
-  }, []);
+  }, [dot1, dot2, dot3]);
 
   const s1 = useAnimatedStyle(() => ({ transform: [{ translateY: dot1.value }] }));
   const s2 = useAnimatedStyle(() => ({ transform: [{ translateY: dot2.value }] }));
@@ -97,23 +175,37 @@ function GlassTypingDots({ colors }: { colors: (typeof Colors)['light'] }) {
 
   return (
     <View style={styles.typingContainer}>
-      <BlurView intensity={55} tint="default" style={[styles.typingGlass, { borderColor: colors.glassBorder }]}>
-        <Animated.View style={[styles.typingDot, { backgroundColor: colors.textMuted }, s1]} />
-        <Animated.View style={[styles.typingDot, { backgroundColor: colors.textMuted }, s2]} />
-        <Animated.View style={[styles.typingDot, { backgroundColor: colors.textMuted }, s3]} />
-      </BlurView>
+      <View
+        style={[
+          styles.typingBubble,
+          {
+            backgroundColor: colors.partnerBubble,
+            borderColor: colors.partnerBubbleBorder,
+          },
+        ]}
+      >
+        <BubbleTailSvg fill={colors.partnerBubble} side="left" />
+        <View style={styles.typingInner}>
+          <Animated.View style={[styles.typingDot, { backgroundColor: colors.textMuted }, s1]} />
+          <Animated.View style={[styles.typingDot, { backgroundColor: colors.textMuted }, s2]} />
+          <Animated.View style={[styles.typingDot, { backgroundColor: colors.textMuted }, s3]} />
+        </View>
+      </View>
     </View>
   );
 }
 
-function TimestampPill({ time, colors }: { time: string; colors: (typeof Colors)['light'] }) {
-  const d = new Date(time);
-  const label = d.toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+function DateSeparator({ time, colors }: { time: string; colors: AppThemeColors }) {
+  const label = getDateSeparatorLabel(time);
   return (
-    <View style={styles.timestampWrap}>
-      <BlurView intensity={40} tint="default" style={[styles.timestampPill, { borderColor: colors.glassBorder }]}>
-        <Text style={[Typography.caption2, { color: colors.textMuted }]}>{label}</Text>
-      </BlurView>
+    <View style={styles.dateSeparatorWrap}>
+      <View style={[styles.dateSeparatorRule, { backgroundColor: colors.divider }]} />
+      <View style={[styles.dateSeparatorPill, { backgroundColor: colors.card, borderColor: colors.glassBorder }]}>
+        <Text style={[Typography.caption1, styles.dateSeparatorText, { color: colors.textSecondary }]}>
+          {label}
+        </Text>
+      </View>
+      <View style={[styles.dateSeparatorRule, { backgroundColor: colors.divider }]} />
     </View>
   );
 }
@@ -163,7 +255,7 @@ function ChatImageFullScreenModal({
       scale.value = ZOOM_MIN;
       savedScale.value = ZOOM_MIN;
     }
-  }, [visible]);
+  }, [savedScale, scale, visible]);
 
   if (!uri) return null;
 
@@ -193,16 +285,18 @@ function ChatImageFullScreenModal({
           </Pressable>
         </View>
 
-        <GestureDetector style={styles.imageViewerGesture} gesture={pinch}>
-          <Animated.View style={[styles.imageViewerStage, zoomStyle]}>
-            <Image
-              source={{ uri }}
-              style={{ width: W, height: imageH }}
-              resizeMode="contain"
-              accessibilityLabel="Full screen photo"
-            />
-          </Animated.View>
-        </GestureDetector>
+        <View style={styles.imageViewerGesture}>
+          <GestureDetector gesture={pinch}>
+            <Animated.View style={[styles.imageViewerStage, zoomStyle]}>
+              <Image
+                source={{ uri }}
+                style={{ width: W, height: imageH }}
+                resizeMode="contain"
+                accessibilityLabel="Full screen photo"
+              />
+            </Animated.View>
+          </GestureDetector>
+        </View>
       </View>
     </Modal>
   );
@@ -284,14 +378,38 @@ function ChatAudioBubble({
   colors,
   isMine,
   fontScale,
+  durationSec,
 }: {
   uri: string;
-  colors: (typeof Colors)['light'];
+  colors: AppThemeColors;
   isMine: boolean;
   fontScale: number;
+  durationSec?: number;
 }) {
   const soundRef = useRef<Audio.Sound | null>(null);
   const [playing, setPlaying] = useState(false);
+  const [positionMs, setPositionMs] = useState(0);
+  const [durationMs, setDurationMs] = useState(durationSec != null ? durationSec * 1000 : 0);
+
+  const handlePlaybackStatus = useCallback((status: AVPlaybackStatus) => {
+    if (!status.isLoaded) {
+      setPlaying(false);
+      return;
+    }
+
+    setPlaying(status.isPlaying);
+    setPositionMs(status.positionMillis ?? 0);
+    if (status.durationMillis != null) {
+      setDurationMs(status.durationMillis);
+    }
+
+    if (status.didJustFinish) {
+      setPlaying(false);
+      setPositionMs(0);
+      void soundRef.current?.unloadAsync();
+      soundRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -300,36 +418,71 @@ function ChatAudioBubble({
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    if (durationMs > 0) return;
+
+    void (async () => {
+      try {
+        const { sound, status } = await Audio.Sound.createAsync({ uri }, { shouldPlay: false }, undefined, false);
+        if (!cancelled && status.isLoaded && status.durationMillis != null) {
+          setDurationMs(status.durationMillis);
+        }
+        await sound.unloadAsync();
+      } catch {
+        // Metadata loading is optional.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [durationMs, uri]);
+
   const toggle = async () => {
     try {
       if (soundRef.current) {
-        await soundRef.current.stopAsync();
-        await soundRef.current.unloadAsync();
-        soundRef.current = null;
-        setPlaying(false);
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-        return;
+        const status = await soundRef.current.getStatusAsync();
+        if (status.isLoaded && status.isPlaying) {
+          await soundRef.current.pauseAsync();
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          return;
+        }
+        if (status.isLoaded) {
+          await soundRef.current.playAsync();
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          return;
+        }
       }
       await Audio.setAudioModeAsync({
         playsInSilentModeIOS: true,
         allowsRecordingIOS: false,
       });
-      const { sound } = await Audio.Sound.createAsync({ uri });
+      const { sound } = await Audio.Sound.createAsync(
+        { uri },
+        { shouldPlay: true, progressUpdateIntervalMillis: 120 },
+        handlePlaybackStatus
+      );
       soundRef.current = sound;
+      sound.setOnPlaybackStatusUpdate(handlePlaybackStatus);
       setPlaying(true);
-      sound.setOnPlaybackStatusUpdate((st) => {
-        if (st.isLoaded && 'didJustFinish' in st && st.didJustFinish) {
-          setPlaying(false);
-        }
-      });
-      await sound.playAsync();
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     } catch (e) {
       console.warn('[ChatAudioBubble]', e);
+      setPlaying(false);
+      setPositionMs(0);
+      void soundRef.current?.unloadAsync();
+      soundRef.current = null;
     }
   };
 
-  const playIconColor = isMine ? colors.myBubbleText : colors.text;
+  const totalDurationSec = durationMs > 0 ? durationMs / 1000 : durationSec;
+  const elapsedSec = positionMs > 0 ? positionMs / 1000 : 0;
+  const progress = durationMs > 0 ? Math.min(1, positionMs / durationMs) : 0;
+  const activeBars = Math.max(0, Math.round(progress * AUDIO_WAVEFORM.length));
+  const textColor = isMine ? colors.myBubbleText : colors.partnerBubbleText;
+  const secondaryTextColor = isMine ? colors.myBubbleMuted : colors.textMuted;
+
   return (
     <Pressable
       onPress={toggle}
@@ -337,23 +490,173 @@ function ChatAudioBubble({
       accessibilityLabel={playing ? 'Pause audio' : 'Play audio'}
       style={styles.audioBubbleRow}
     >
-      <AppSymbol
-        sf={playing ? 'pause.circle.fill' : 'play.circle.fill'}
-        ion={playing ? 'pause-circle' : 'play-circle'}
-        size={36 * fontScale}
-        color={playIconColor}
-      />
-      <Text
+      <View
         style={[
-          styles.messageText,
+          styles.audioPlayButton,
           {
-            color: isMine ? colors.myBubbleText : colors.partnerBubbleText,
-            fontSize: Typography.body.fontSize * fontScale,
+            backgroundColor: isMine ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.08)',
           },
         ]}
       >
-        Voice / audio
-      </Text>
+        <AppSymbol
+          sf={playing ? 'pause.fill' : 'play.fill'}
+          ion={playing ? 'pause' : 'play'}
+          size={18 * fontScale}
+          color={textColor}
+          style={playing ? undefined : { marginLeft: 2 }}
+        />
+      </View>
+
+      <View style={styles.audioWaveSection}>
+        <View style={styles.audioWaveformRow}>
+          {AUDIO_WAVEFORM.map((height, index) => {
+            const filled = index < activeBars || (playing && index === activeBars);
+            return (
+              <View
+                key={`${height}-${index}`}
+                style={[
+                  styles.audioWaveBar,
+                  {
+                    height,
+                    opacity: filled ? 1 : 0.3,
+                    backgroundColor: filled ? textColor : secondaryTextColor,
+                  },
+                ]}
+              />
+            );
+          })}
+        </View>
+        <View style={styles.audioTimeRow}>
+          <Text style={[styles.audioTimeText, { color: secondaryTextColor, fontSize: 11 * fontScale }]}>
+            {formatDuration(elapsedSec)}
+          </Text>
+          <Text style={[styles.audioTimeText, { color: secondaryTextColor, fontSize: 11 * fontScale }]}>
+            {formatDuration(totalDurationSec)}
+          </Text>
+        </View>
+      </View>
+    </Pressable>
+  );
+}
+
+function MessageStatusIndicator({
+  status,
+  colors,
+  fontScale,
+}: {
+  status: Message['status'];
+  colors: AppThemeColors;
+  fontScale: number;
+}) {
+  if (status === 'sending') {
+    return (
+      <AppSymbol
+        sf="clock"
+        ion="time-outline"
+        size={12 * fontScale}
+        color={colors.myBubbleMuted}
+        style={styles.receiptSending}
+      />
+    );
+  }
+
+  const tickColor = status === 'read' ? colors.textOnPrimary : colors.myBubbleMuted;
+  const tickIcon = <AppSymbol sf="checkmark" ion="checkmark" size={11 * fontScale} color={tickColor} />;
+
+  if (status === 'sent') {
+    return <View style={styles.receiptSingle}>{tickIcon}</View>;
+  }
+
+  return (
+    <View style={styles.receiptDouble}>
+      <View style={styles.receiptDoubleLead}>{tickIcon}</View>
+      <View style={styles.receiptDoubleTrail}>{tickIcon}</View>
+    </View>
+  );
+}
+
+function MediaThumbnail({
+  message,
+  fontScale,
+  onPress,
+}: {
+  message: Message;
+  fontScale: number;
+  onPress: () => void;
+}) {
+  const label = inferMediaLabel(message);
+  const isVideo = message.type === 'video';
+  const detail = isVideo ? formatDuration(message.duration) : 'Tap to expand';
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={isVideo ? 'Open video full screen' : 'View image full screen'}
+      accessibilityHint="Opens the media in an expanded view"
+      onPress={() => {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        onPress();
+      }}
+      style={styles.mediaCardPressable}
+    >
+      <View style={styles.mediaCard}>
+        {isVideo ? (
+          <View style={styles.videoThumbContainer}>
+            <Video
+              source={{ uri: message.media_uri! }}
+              style={[styles.messageVideo, { maxHeight: 250 * fontScale }]}
+              resizeMode={ResizeMode.COVER}
+              shouldPlay={false}
+              isMuted
+              useNativeControls={false}
+              isLooping={false}
+            />
+          </View>
+        ) : (
+          <Image
+            source={{ uri: message.media_uri }}
+            style={[styles.messageImage, { maxHeight: 240 * fontScale }]}
+            resizeMode="cover"
+            accessibilityLabel="Shared image"
+          />
+        )}
+
+        <View style={styles.mediaDimOverlay} pointerEvents="none" />
+
+        {isVideo ? (
+          <View style={styles.videoPlayOverlay} pointerEvents="none">
+            <View style={styles.videoPlayButton}>
+              <AppSymbol
+                sf="play.fill"
+                ion="play"
+                size={26 * fontScale}
+                color="rgba(255,255,255,0.95)"
+                style={{ marginLeft: 2 }}
+              />
+            </View>
+          </View>
+        ) : null}
+
+        <View style={styles.mediaTopRight} pointerEvents="none">
+          <View style={styles.mediaExpandBadge}>
+            <AppSymbol
+              sf="arrow.up.left.and.arrow.down.right"
+              ion="expand-outline"
+              size={14 * fontScale}
+              color="#FFFFFF"
+            />
+          </View>
+        </View>
+
+        <View style={styles.mediaFooter} pointerEvents="none">
+          <Text style={[styles.mediaName, { fontSize: 13 * fontScale }]} numberOfLines={1}>
+            {label}
+          </Text>
+          <Text style={[styles.mediaMeta, { fontSize: 11 * fontScale }]} numberOfLines={1}>
+            {detail}
+          </Text>
+        </View>
+      </View>
     </Pressable>
   );
 }
@@ -378,7 +681,7 @@ function MessageBubble({
   onDelete: (msgId: string) => void;
   onImagePress?: (uri: string) => void;
   onVideoPress?: (uri: string) => void;
-  colors: (typeof Colors)['light'];
+  colors: AppThemeColors;
   scheme: 'light' | 'dark';
   highContrast: boolean;
   fontScale: number;
@@ -421,133 +724,82 @@ function MessageBubble({
     transform: [{ scale: scale.value }],
   }));
 
-  const reactions = (() => {
+  const reactions = useMemo(() => {
     try {
-      return JSON.parse(message.reactions);
+      const raw: unknown = JSON.parse(message.reactions || '[]');
+      if (!Array.isArray(raw)) return [];
+      return raw.map((r) => (typeof r === 'string' ? normalizeReactionKey(r) : '')).filter(Boolean);
     } catch {
       return [];
     }
-  })();
+  }, [message.reactions]);
 
-  const formatTime = (t: string) => {
-    const d = new Date(t);
-    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  };
+  const messageAccessibilityLabel = useMemo(() => {
+    const kind =
+      message.type === 'text'
+        ? (decryptedText.trim() || 'Message')
+        : `${message.type} message`;
+    const who = isMine ? 'Your message' : `Message from ${message.sender_name?.trim() || 'partner'}`;
+    const rx =
+      reactions.length === 0
+        ? ''
+        : ` Reactions: ${reactions
+            .map((k) => ReactionIcons.find((x) => x.name === k)?.name ?? k)
+            .join(', ')}.`;
+    return `${who}. ${kind}.${rx} ${formatClockTime(message.time)}.`;
+  }, [
+    message.type,
+    message.sender_name,
+    decryptedText,
+    isMine,
+    reactions,
+    message.time,
+  ]);
 
-  const statusSf = (): SFSymbol => {
-    switch (message.status) {
-      case 'sending':
-        return 'clock';
-      case 'sent':
-        return 'checkmark';
-      case 'delivered':
-        return 'checkmark.circle';
-      case 'read':
-        return 'checkmark.circle.fill';
-      default:
-        return 'checkmark';
-    }
-  };
-
-  const tint: 'light' | 'dark' | 'default' = scheme === 'dark' ? 'dark' : 'light';
-  /** Peach overlay + blur washes out light coral; keep for dark glass only. */
-  const coralTint = isMine && scheme === 'dark' ? 'rgba(255, 131, 96, 0.35)' : undefined;
   const borderW = highContrast ? 1 : 0.5;
-
-  const bubbleShellStyle = [
-    styles.bubble,
-    {
-      borderWidth: borderW,
-      borderColor: isMine
-        ? scheme === 'light'
-          ? highContrast
-            ? '#000000'
-            : colors.myBubble
-          : colors.accent + (highContrast ? 'CC' : '66')
-        : scheme === 'light'
-          ? colors.partnerBubbleBorder
-          : colors.glassBorder,
-      overflow: 'hidden' as const,
-      borderBottomRightRadius: isMine ? 4 : BorderRadius.lg,
-      borderBottomLeftRadius: isMine ? BorderRadius.lg : 4,
-      ...(scheme === 'light' && {
-        backgroundColor: isMine ? colors.myBubble : colors.partnerBubble,
-      }),
-    },
-  ];
+  const bubbleBackground = isMine ? colors.myBubble : colors.partnerBubble;
+  const bubbleBorder = isMine
+    ? scheme === 'light' && highContrast
+      ? '#000000'
+      : bubbleBackground
+    : colors.partnerBubbleBorder;
+  const textColor = isMine ? colors.myBubbleText : colors.partnerBubbleText;
+  const metaColor = isMine ? colors.myBubbleMuted : colors.textMuted;
+  const isMediaFrame = message.type === 'image' || message.type === 'video';
 
   const bubbleBody = (
-    <>
-      {coralTint ? <View style={[StyleSheet.absoluteFillObject, { backgroundColor: coralTint }]} /> : null}
-      <View style={styles.bubbleInner}>
+      <View style={[styles.bubbleInner, isMediaFrame && styles.bubbleInnerMedia]}>
             {message.type === 'image' && message.media_uri ? (
-              <Pressable
-                accessibilityRole="imagebutton"
-                accessibilityLabel="View image full screen"
-                onPress={() => {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  onImagePress?.(message.media_uri!);
-                }}
-              >
-                <Image
-                  source={{ uri: message.media_uri }}
-                  style={[styles.messageImage, { maxHeight: 220 * fontScale }]}
-                  resizeMode="cover"
-                  accessibilityLabel="Shared image"
-                />
-              </Pressable>
+              <MediaThumbnail message={message} fontScale={fontScale} onPress={() => onImagePress?.(message.media_uri!)} />
             ) : message.type === 'video' && message.media_uri ? (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Play video"
-                accessibilityHint="Opens full screen video with controls"
-                onPress={() => {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  onVideoPress?.(message.media_uri!);
-                }}
-                style={styles.videoBubblePressable}
-              >
-                <View style={styles.videoThumbContainer}>
-                  <Video
-                    source={{ uri: message.media_uri }}
-                    style={[styles.messageVideo, { maxHeight: 240 * fontScale }]}
-                    resizeMode={ResizeMode.COVER}
-                    shouldPlay={false}
-                    isMuted
-                    useNativeControls={false}
-                    isLooping={false}
-                  />
-                  <View style={styles.videoPlayOverlay} pointerEvents="none">
-                    <AppSymbol
-                      sf="play.circle.fill"
-                      ion="play-circle"
-                      size={Math.min(56, 48 * fontScale)}
-                      color="rgba(255,255,255,0.95)"
-                    />
-                  </View>
-                </View>
-              </Pressable>
+              <MediaThumbnail message={message} fontScale={fontScale} onPress={() => onVideoPress?.(message.media_uri!)} />
             ) : message.type === 'audio' && message.media_uri ? (
-              <ChatAudioBubble uri={message.media_uri} colors={colors} isMine={isMine} fontScale={fontScale} />
+              <ChatAudioBubble
+                uri={message.media_uri}
+                colors={colors}
+                isMine={isMine}
+                fontScale={fontScale}
+                durationSec={message.duration}
+              />
             ) : message.type === 'image' || message.type === 'video' || message.type === 'audio' ? (
               <Text
                 style={[
                   styles.messageText,
                   {
-                    color: isMine ? colors.myBubbleText : colors.partnerBubbleText,
+                    color: textColor,
                     fontSize: Typography.body.fontSize * fontScale,
                     fontStyle: 'italic',
                   },
                 ]}
               >
-                Receiving media…
+                Receiving media...
               </Text>
             ) : (
               <Text
                 style={[
                   styles.messageText,
                   {
-                    color: isMine ? colors.myBubbleText : colors.partnerBubbleText,
+                    color: textColor,
                     fontSize: Typography.body.fontSize * fontScale,
                     lineHeight: (Typography.body.lineHeight ?? 22) * fontScale,
                   },
@@ -570,7 +822,7 @@ function MessageBubble({
                   style={[
                     styles.uploadProgressTrack,
                     {
-                      backgroundColor: isMine ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.1)',
+                      backgroundColor: isMine ? 'rgba(255,255,255,0.28)' : 'rgba(0,0,0,0.1)',
                     },
                   ]}
                 >
@@ -588,7 +840,7 @@ function MessageBubble({
                   style={[
                     styles.uploadPercentText,
                     {
-                      color: isMine ? colors.myBubbleMuted : colors.textMuted,
+                      color: metaColor,
                       fontSize: 11 * fontScale,
                     },
                   ]}
@@ -602,79 +854,130 @@ function MessageBubble({
                 style={[
                   styles.timeText,
                   {
-                    color: isMine ? colors.myBubbleMuted : colors.textMuted,
+                    color: metaColor,
                     fontSize: 11 * fontScale,
                   },
                 ]}
               >
-                {formatTime(message.time)}
+                {formatClockTime(message.time)}
               </Text>
-              {isMine && (
-                <AppSymbol
-                  sf={statusSf()}
-                  ion={
-                    message.status === 'sending'
-                      ? 'time-outline'
-                      : message.status === 'delivered'
-                        ? 'checkmark-circle-outline'
-                        : message.status === 'read'
-                          ? 'checkmark-done'
-                          : 'checkmark'
-                  }
-                  size={12 * fontScale}
-                  color={message.status === 'read' ? colors.myBubbleText : colors.myBubbleMuted}
-                  style={{ marginLeft: 4 }}
-                />
-              )}
+              {isMine && <MessageStatusIndicator status={message.status} colors={colors} fontScale={fontScale} />}
             </View>
           </View>
-    </>
   );
 
   return (
     <Animated.View entering={FadeInUp.springify().damping(18)} style={[animStyle]}>
       <Pressable
-        accessibilityLabel="Message"
-        accessibilityHint="Long press for reactions"
+        accessible
+        accessibilityRole="button"
+        accessibilityLabel={messageAccessibilityLabel}
+        accessibilityHint="Opens reactions. Long press to add or change a reaction."
+        accessibilityState={{ expanded: showReactions }}
         onLongPress={() => {
           setShowReactions(!showReactions);
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
         }}
-        style={[styles.bubbleWrapper, isMine ? styles.bubbleRight : styles.bubbleLeft]}
+        style={[
+          styles.bubbleWrapper,
+          isMine ? styles.bubbleRight : styles.bubbleLeft,
+          reactions.length > 0 && styles.bubbleWrapperWithReactions,
+        ]}
       >
-        {scheme === 'light' ? (
-          <View style={bubbleShellStyle}>{bubbleBody}</View>
-        ) : (
-          <BlurView intensity={isMine ? 70 : 55} tint={tint} style={bubbleShellStyle}>
+        <View style={styles.bubbleSurfaceWrap}>
+          <BubbleTailSvg fill={bubbleBackground} side={isMine ? 'right' : 'left'} />
+          <View
+            style={[
+              styles.bubble,
+              {
+                backgroundColor: bubbleBackground,
+                borderColor: bubbleBorder,
+                borderWidth: borderW,
+                borderBottomRightRadius: isMine ? 8 : 22,
+                borderBottomLeftRadius: isMine ? 22 : 8,
+              },
+            ]}
+          >
             {bubbleBody}
-          </BlurView>
-        )}
-
-        {reactions.length > 0 && (
-          <View style={[styles.reactionsDisplay, isMine ? styles.reactionsRight : styles.reactionsLeft]}>
-            {reactions.map((r: string, i: number) => {
-              const icon = ReactionIcons.find((ri) => ri.name === r);
-              return icon ? (
-                <BlurView
-                  key={i}
-                  intensity={50}
-                  tint={tint}
-                  style={[styles.reactionBadge, { borderColor: colors.glassBorder, borderWidth: borderW }]}
-                >
-                  <AppSymbol sf={icon.sf as SFSymbol} ion={icon.icon as never} size={12} color={icon.color} />
-                </BlurView>
-              ) : null;
-            })}
           </View>
-        )}
+          {reactions.length > 0 && (
+            <View
+              style={[
+                styles.reactionsOverlay,
+                isMine ? styles.reactionsOverlayMine : styles.reactionsOverlayTheirs,
+              ]}
+              pointerEvents="none"
+              accessibilityElementsHidden={false}
+              importantForAccessibility="yes"
+              accessibilityRole="text"
+              accessibilityLabel={
+                'Reactions: ' +
+                reactions
+                  .map((k) => ReactionIcons.find((x) => x.name === k)?.name ?? k)
+                  .join(', ')
+              }
+            >
+              {reactions.map((r: string, i: number) => {
+                const icon = ReactionIcons.find((ri) => ri.name === r);
+                return icon ? (
+                  <View
+                    key={`${r}-${i}`}
+                    style={[
+                      styles.reactionBadge,
+                      {
+                        borderColor: colors.reactionBadgeBorder,
+                        borderWidth: borderW,
+                        backgroundColor: colors.reactionBadgeBg,
+                      },
+                    ]}
+                  >
+                    <AppSymbol sf={icon.sf as SFSymbol} ion={icon.icon as never} size={13} color={icon.color} />
+                  </View>
+                ) : (
+                  <View
+                    key={`${r}-${i}`}
+                    style={[
+                      styles.reactionBadge,
+                      styles.reactionBadgeEmoji,
+                      {
+                        borderColor: colors.reactionBadgeBorder,
+                        borderWidth: borderW,
+                        backgroundColor: colors.reactionBadgeBg,
+                      },
+                    ]}
+                  >
+                    <Text style={[styles.reactionEmojiText, { color: colors.text }]}>{r}</Text>
+                  </View>
+                );
+              })}
+            </View>
+          )}
+        </View>
 
         {showReactions && (
-          <Animated.View entering={FadeIn}>
-            <BlurView intensity={60} tint={tint} style={[styles.reactionPicker, { borderColor: colors.glassBorder }]}>
+          <Animated.View
+            entering={FadeIn}
+            style={[
+              styles.reactionPickerWrap,
+              isMine ? styles.reactionPickerRight : styles.reactionPickerLeft,
+            ]}
+          >
+            <View
+              style={[
+                styles.reactionPicker,
+                {
+                  backgroundColor: colors.reactionPickerBg,
+                  borderColor: colors.reactionPickerBorder,
+                  borderWidth: StyleSheet.hairlineWidth,
+                },
+              ]}
+            >
               {ReactionIcons.map((r) => (
                 <Pressable
                   key={r.name}
+                  accessibilityRole="button"
                   accessibilityLabel={`React with ${r.name}`}
+                  accessibilityHint={`Adds a ${r.name} reaction to this message`}
                   onPress={() => {
                     onReact(message.id, r.name);
                     setShowReactions(false);
@@ -682,22 +985,29 @@ function MessageBubble({
                   }}
                   style={styles.reactionButton}
                 >
-                  <AppSymbol sf={r.sf as SFSymbol} ion={r.icon as never} size={22} color={r.color} />
+                  <AppSymbol
+                    sf={r.sf as SFSymbol}
+                    ion={r.icon as never}
+                    size={22}
+                    color={reactionPickerIconColor(r.name as keyof typeof REACTION_PICKER_ICON_COLORS)}
+                  />
                 </Pressable>
               ))}
               {isMine && (
                 <Pressable
+                  accessibilityRole="button"
                   accessibilityLabel="Delete message"
+                  accessibilityHint="Deletes this message"
                   onPress={() => {
                     onDelete(message.id);
                     setShowReactions(false);
                   }}
                   style={styles.reactionButton}
                 >
-                  <AppSymbol sf="trash" ion="trash-outline" size={20} color={colors.error} />
+                  <AppSymbol sf="trash" ion="trash-outline" size={20} color="#991B1B" />
                 </Pressable>
               )}
-            </BlurView>
+            </View>
           </Animated.View>
         )}
       </Pressable>
@@ -714,15 +1024,44 @@ export type ChatScreenContentProps = {
 
 export function ChatScreenContent({ onBack, initialQuickAction }: ChatScreenContentProps) {
   const router = useRouter();
-  const colorScheme = useColorScheme() ?? 'dark';
-  const scheme = colorScheme === 'light' ? 'light' : 'dark';
-  const colors = Colors[scheme];
+  const { colors, scheme } = useThemeColors();
   const insets = useSafeAreaInsets();
   const { fontScale } = useWindowDimensions();
   const { reduceMotion, highContrast } = useAccessibilitySettings();
 
   const { user, token, partner, sharedSecret } = useAuthStore();
   const { messages, isTyping, partnerMood, isPartnerOnline, isConnected, loadMessages } = useChatStore();
+
+  /** iOS: track keyboard for composer inset. Android: avoid KeyboardAvoidingView (leaves phantom padding); use keyboard height on a wrapper instead. */
+  const [iosKeyboardOpen, setIosKeyboardOpen] = useState(false);
+  const [androidKeyboardHeight, setAndroidKeyboardHeight] = useState(0);
+
+  useEffect(() => {
+    if (Platform.OS === 'ios') {
+      const show = Keyboard.addListener('keyboardWillShow', () => setIosKeyboardOpen(true));
+      const hide = Keyboard.addListener('keyboardWillHide', () => setIosKeyboardOpen(false));
+      return () => {
+        show.remove();
+        hide.remove();
+      };
+    }
+    const show = Keyboard.addListener('keyboardDidShow', (e) => {
+      setAndroidKeyboardHeight(e.endCoordinates.height);
+    });
+    const hide = Keyboard.addListener('keyboardDidHide', () => {
+      setAndroidKeyboardHeight(0);
+    });
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
+
+  const composerBottomPadding = Platform.select({
+    ios: iosKeyboardOpen ? 10 : Math.max(insets.bottom, 10),
+    android: androidKeyboardHeight > 0 ? 8 : Math.max(insets.bottom, 10),
+    default: Math.max(insets.bottom, 10),
+  })!;
 
   const {
     sendMessage,
@@ -739,6 +1078,7 @@ export function ChatScreenContent({ onBack, initialQuickAction }: ChatScreenCont
   const [inputHeight, setInputHeight] = useState(40);
   const [fullScreenImageUri, setFullScreenImageUri] = useState<string | null>(null);
   const [fullScreenVideoUri, setFullScreenVideoUri] = useState<string | null>(null);
+  const [partnerAvatarFullscreenUri, setPartnerAvatarFullscreenUri] = useState<string | null>(null);
   const flatListRef = useRef<FlatList>(null);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sendScale = useSharedValue(1);
@@ -863,11 +1203,23 @@ export function ChatScreenContent({ onBack, initialQuickAction }: ChatScreenCont
       const asset = result.assets[0];
       const durationSec =
         asset.duration != null ? Math.round(asset.duration / 1000) : undefined;
+      const rawMime = (asset.mimeType ?? '').toLowerCase();
+      let mimeType = rawMime || 'video/mp4';
+      if (!rawMime && asset.uri) {
+        const u = asset.uri.toLowerCase();
+        if (u.includes('.webm')) mimeType = 'video/webm';
+        else if (u.includes('.3gp')) mimeType = 'video/3gpp';
+      }
+      let fileName = asset.fileName ?? 'video.mp4';
+      if (!/\.[a-z0-9]+$/i.test(fileName)) {
+        fileName =
+          mimeType.includes('webm') ? 'video.webm' : mimeType.includes('3gp') ? 'video.3gp' : 'video.mp4';
+      }
       await sendEncryptedMediaAttachment({
         uri: asset.uri,
-        mimeType: asset.mimeType ?? 'video/mp4',
+        mimeType,
         type: 'video',
-        fileName: asset.fileName ?? 'video.mp4',
+        fileName,
         duration: durationSec,
         sharedSecret,
         user: { id: user?.id || '', name: user?.name || '' },
@@ -926,11 +1278,27 @@ export function ChatScreenContent({ onBack, initialQuickAction }: ChatScreenCont
           ? Math.round(finalStatus.durationMillis / 1000)
           : undefined;
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      const u = uri.toLowerCase();
+      let mimeType = 'audio/mp4';
+      let fileName = 'voice.m4a';
+      if (u.includes('.3gp') || u.includes('.amr')) {
+        mimeType = 'audio/3gpp';
+        fileName = 'voice.3gp';
+      } else if (u.includes('.aac')) {
+        mimeType = 'audio/aac';
+        fileName = 'voice.aac';
+      } else if (u.includes('.webm')) {
+        mimeType = 'audio/webm';
+        fileName = 'voice.webm';
+      } else if (u.includes('.caf')) {
+        mimeType = 'audio/x-caf';
+        fileName = 'voice.caf';
+      }
       await sendEncryptedMediaAttachment({
         uri,
-        mimeType: 'audio/m4a',
+        mimeType,
         type: 'audio',
-        fileName: 'voice.m4a',
+        fileName,
         duration: durationSec,
         sharedSecret,
         user: { id: user?.id || '', name: user?.name || '' },
@@ -1027,8 +1395,8 @@ export function ChatScreenContent({ onBack, initialQuickAction }: ChatScreenCont
 
   const renderRow = useCallback(
     ({ item }: { item: ListRow }) => {
-      if (item.rowKind === 'timestamp') {
-        return <TimestampPill time={item.time} colors={colors} />;
+      if (item.rowKind === 'date') {
+        return <DateSeparator time={item.time} colors={colors} />;
       }
       return (
         <MessageBubble
@@ -1060,6 +1428,165 @@ export function ChatScreenContent({ onBack, initialQuickAction }: ChatScreenCont
     ]
   );
 
+  const renderChatColumn = () => (
+    <>
+      <FlatList
+        ref={flatListRef}
+        data={rows}
+        renderItem={renderRow}
+        keyExtractor={(item) => item.id}
+        contentContainerStyle={[styles.messageList, { paddingBottom: 12 }]}
+        showsVerticalScrollIndicator={false}
+        removeClippedSubviews={false}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+        ListEmptyComponent={() => (
+          <View style={styles.emptyState}>
+            <BlurView intensity={50} tint={tint} style={[styles.emptyCircle, { borderColor: colors.glassBorder }]}>
+              <AppSymbol sf="heart.fill" ion="heart" size={48} color={colors.tint} />
+            </BlurView>
+            <Text style={[Typography.title3, { color: colors.text, marginTop: 16, textAlign: 'center' }]}>
+              Your story starts here
+            </Text>
+            <Text style={[Typography.callout, { color: colors.textMuted, textAlign: 'center', marginTop: 8 }]}>
+              Send your first message to begin your journey together
+            </Text>
+          </View>
+        )}
+        onContentSizeChange={() => {
+          if (messages.length > 0) {
+            flatListRef.current?.scrollToEnd({ animated: !reduceMotion });
+          }
+        }}
+      />
+
+      {isTyping && <TypingIndicatorBubble colors={colors} />}
+
+      {isRecordingVoice && (
+        <View
+          style={[
+            styles.recordingBar,
+            {
+              borderTopWidth: StyleSheet.hairlineWidth,
+              borderTopColor: colors.glassBorder,
+              backgroundColor: colors.background,
+            },
+          ]}
+        >
+          <Text style={[Typography.callout, { color: colors.text }]}>Recording voice…</Text>
+          <View style={styles.recordingActions}>
+            <Pressable onPress={cancelVoiceRecording} style={styles.recordingBtn}>
+              <Text style={{ color: colors.textMuted }}>Cancel</Text>
+            </Pressable>
+            <Pressable onPress={() => void stopVoiceRecordingAndSend()} style={styles.recordingBtn}>
+              <Text style={{ color: colors.accent, fontWeight: '600' }}>Stop & send</Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
+
+      <BlurView
+        intensity={isIOS ? 85 : 70}
+        tint={tint}
+        style={[
+          styles.inputArea,
+          {
+            borderTopWidth: StyleSheet.hairlineWidth,
+            borderTopColor: colors.glassBorder,
+            paddingBottom: composerBottomPadding,
+          },
+        ]}
+      >
+        <View
+          style={[
+            styles.composerShell,
+            {
+              backgroundColor: colors.inputBg,
+              borderColor: colors.inputBorder,
+            },
+          ]}
+        >
+          <Pressable
+            accessibilityLabel="Open attachment menu"
+            onPress={openAttachmentMenu}
+            style={[styles.composerIconButton, { backgroundColor: colors.backgroundSecondary }]}
+          >
+            <AppSymbol sf="plus" ion="add" size={22} color={colors.tint} />
+          </Pressable>
+
+          <View style={styles.inputContainer}>
+            <TextInput
+              style={[
+                styles.textInput,
+                {
+                  color: colors.text,
+                  maxHeight: 100,
+                  height: Math.max(40, inputHeight),
+                  fontSize: Typography.body.fontSize * fontScale,
+                },
+              ]}
+              placeholder="Type a message"
+              placeholderTextColor={colors.inputPlaceholder}
+              value={inputText}
+              onChangeText={handleTextChange}
+              multiline
+              accessibilityLabel="Message input"
+              onContentSizeChange={(e) => {
+                setInputHeight(e.nativeEvent.contentSize.height);
+              }}
+            />
+          </View>
+
+          <View style={styles.composerTrailing}>
+            <Pressable
+              accessibilityLabel="Record voice message"
+              accessibilityHint="Starts recording a voice message to send"
+              accessibilityState={{ disabled: isRecordingVoice }}
+              disabled={isRecordingVoice}
+              onPress={() => void startVoiceRecording()}
+              style={({ pressed }) => [
+                styles.inputMicButton,
+                { opacity: pressed || isRecordingVoice ? 0.5 : 1 },
+              ]}
+            >
+              <AppSymbol
+                sf="mic.fill"
+                ion="mic"
+                size={22}
+                color={isRecordingVoice ? colors.textMuted : colors.tint}
+              />
+            </Pressable>
+            <Animated.View style={sendAnimStyle}>
+              <Pressable
+                accessibilityLabel="Send message"
+                accessibilityState={{ disabled: !inputText.trim() }}
+                disabled={!inputText.trim()}
+                onPress={() => {
+                  void handleSend();
+                }}
+                style={[
+                  styles.sendButton,
+                  {
+                    backgroundColor: inputText.trim() ? colors.accent : colors.glassLight,
+                    opacity: inputText.trim() ? 1 : 0.75,
+                  },
+                ]}
+              >
+                <AppSymbol
+                  sf="paperplane.fill"
+                  ion="send"
+                  size={18}
+                  color={inputText.trim() ? colors.textOnPrimary : colors.tint}
+                  style={{ marginLeft: 2 }}
+                />
+              </Pressable>
+            </Animated.View>
+          </View>
+        </View>
+      </BlurView>
+    </>
+  );
+
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <ChatImageFullScreenModal
@@ -1072,6 +1599,12 @@ export function ChatScreenContent({ onBack, initialQuickAction }: ChatScreenCont
         uri={fullScreenVideoUri}
         visible={!!fullScreenVideoUri}
         onClose={() => setFullScreenVideoUri(null)}
+        topInset={insets.top}
+      />
+      <AvatarFullScreenModal
+        uri={partnerAvatarFullscreenUri}
+        visible={!!partnerAvatarFullscreenUri}
+        onClose={() => setPartnerAvatarFullscreenUri(null)}
         topInset={insets.top}
       />
       <BlurView
@@ -1103,9 +1636,31 @@ export function ChatScreenContent({ onBack, initialQuickAction }: ChatScreenCont
 
           <View style={styles.headerCenter}>
             <View style={styles.avatarContainer}>
-              <BlurView intensity={45} tint={tint} style={[styles.avatar, { borderColor: colors.glassBorder }]}>
-                <AppSymbol sf="person.fill" ion="person" size={20} color={colors.tint} />
-              </BlurView>
+              <Pressable
+                disabled={!canDisplayAvatarUri(partner?.avatar)}
+                onPress={() => {
+                  if (!canDisplayAvatarUri(partner?.avatar)) return;
+                  void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  setPartnerAvatarFullscreenUri(partner!.avatar!);
+                }}
+                accessibilityRole={canDisplayAvatarUri(partner?.avatar) ? 'button' : 'image'}
+                accessibilityLabel={
+                  canDisplayAvatarUri(partner?.avatar) ? 'View partner profile photo full screen' : undefined
+                }
+              >
+                <BlurView intensity={45} tint={tint} style={[styles.avatar, { borderColor: colors.glassBorder }]}>
+                  {canDisplayAvatarUri(partner?.avatar) ? (
+                    <ExpoImage
+                      source={{ uri: partner!.avatar! }}
+                      style={StyleSheet.absoluteFillObject}
+                      contentFit="cover"
+                      transition={120}
+                    />
+                  ) : (
+                    <AppSymbol sf="person.fill" ion="person" size={20} color={colors.tint} />
+                  )}
+                </BlurView>
+              </Pressable>
               {isPartnerOnline && (
                 <View style={[styles.onlineDot, { backgroundColor: colors.online, borderColor: colors.background }]} />
               )}
@@ -1129,133 +1684,15 @@ export function ChatScreenContent({ onBack, initialQuickAction }: ChatScreenCont
         </View>
       </BlurView>
 
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={styles.flex}
-        keyboardVerticalOffset={0}
-      >
-        <FlatList
-          ref={flatListRef}
-          data={rows}
-          renderItem={renderRow}
-          keyExtractor={(item) => item.id}
-          contentContainerStyle={[styles.messageList, { paddingBottom: 8 }]}
-          showsVerticalScrollIndicator={false}
-          ListEmptyComponent={() => (
-            <View style={styles.emptyState}>
-              <BlurView intensity={50} tint={tint} style={[styles.emptyCircle, { borderColor: colors.glassBorder }]}>
-                <AppSymbol sf="heart.fill" ion="heart" size={48} color={colors.tint} />
-              </BlurView>
-              <Text style={[Typography.title3, { color: colors.text, marginTop: 16, textAlign: 'center' }]}>
-                Your story starts here
-              </Text>
-              <Text style={[Typography.callout, { color: colors.textMuted, textAlign: 'center', marginTop: 8 }]}>
-                Send your first message to begin your journey together
-              </Text>
-            </View>
-          )}
-          onContentSizeChange={() => {
-            if (messages.length > 0) {
-              flatListRef.current?.scrollToEnd({ animated: !reduceMotion });
-            }
-          }}
-        />
-
-        {isTyping && <GlassTypingDots colors={colors} />}
-
-        {isRecordingVoice && (
-          <View
-            style={[
-              styles.recordingBar,
-              {
-                borderTopWidth: StyleSheet.hairlineWidth,
-                borderTopColor: colors.glassBorder,
-                backgroundColor: colors.background,
-              },
-            ]}
-          >
-            <Text style={[Typography.callout, { color: colors.text }]}>Recording voice…</Text>
-            <View style={styles.recordingActions}>
-              <Pressable onPress={cancelVoiceRecording} style={styles.recordingBtn}>
-                <Text style={{ color: colors.textMuted }}>Cancel</Text>
-              </Pressable>
-              <Pressable onPress={() => void stopVoiceRecordingAndSend()} style={styles.recordingBtn}>
-                <Text style={{ color: colors.accent, fontWeight: '600' }}>Stop & send</Text>
-              </Pressable>
-            </View>
-          </View>
-        )}
-
-        <BlurView
-          intensity={isIOS ? 85 : 70}
-          tint={tint}
-          style={[
-            styles.inputArea,
-            {
-              borderTopWidth: StyleSheet.hairlineWidth,
-              borderTopColor: colors.glassBorder,
-              paddingBottom: Math.max(insets.bottom, 10),
-            },
-          ]}
-        >
-          <Pressable
-            accessibilityLabel="Attach photo, video, or audio"
-            onPress={openAttachmentMenu}
-            style={styles.attachButton}
-          >
-            <AppSymbol sf="paperclip" ion="attach" size={24} color={colors.tint} />
-          </Pressable>
-
-          <View style={[styles.inputContainer, { backgroundColor: colors.inputBg, borderColor: colors.inputBorder }]}>
-            <TextInput
-              style={[
-                styles.textInput,
-                {
-                  color: colors.text,
-                  maxHeight: 100,
-                  height: Math.max(40, inputHeight),
-                  fontSize: Typography.body.fontSize * fontScale,
-                },
-              ]}
-              placeholder="Message"
-              placeholderTextColor={colors.textMuted}
-              value={inputText}
-              onChangeText={handleTextChange}
-              multiline
-              accessibilityLabel="Message input"
-              onContentSizeChange={(e) => {
-                setInputHeight(e.nativeEvent.contentSize.height);
-              }}
-            />
-          </View>
-
-          <Animated.View style={sendAnimStyle}>
-            <Pressable
-              accessibilityLabel={inputText.trim() ? 'Send message' : 'Record voice message'}
-              onPress={() => {
-                if (inputText.trim()) {
-                  void handleSend();
-                } else {
-                  void startVoiceRecording();
-                }
-              }}
-              style={[
-                styles.sendButton,
-                {
-                  backgroundColor: inputText.trim() ? colors.accent : colors.glassLight,
-                },
-              ]}
-            >
-              <AppSymbol
-                sf={inputText.trim() ? 'arrow.up.circle.fill' : 'mic.fill'}
-                ion={inputText.trim() ? 'send' : 'mic'}
-                size={22}
-                color={inputText.trim() ? colors.textOnPrimary : colors.tint}
-              />
-            </Pressable>
-          </Animated.View>
-        </BlurView>
-      </KeyboardAvoidingView>
+      {Platform.OS === 'ios' ? (
+        <KeyboardAvoidingView behavior="padding" style={styles.flex} keyboardVerticalOffset={0}>
+          {renderChatColumn()}
+        </KeyboardAvoidingView>
+      ) : (
+        <View style={[styles.flex, { paddingBottom: androidKeyboardHeight }]}>
+          {renderChatColumn()}
+        </View>
+      )}
     </View>
   );
 }
@@ -1318,6 +1755,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: 'rgba(0,0,0,0.35)',
   },
+  videoPlayButton: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(15,15,17,0.5)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+  },
 
   header: {
     paddingHorizontal: 12,
@@ -1367,40 +1814,107 @@ const styles = StyleSheet.create({
   connDot: { width: 8, height: 8, borderRadius: 4 },
 
   messageList: {
-    paddingHorizontal: 12,
-    paddingTop: 12,
+    paddingHorizontal: 14,
+    paddingTop: 10,
     flexGrow: 1,
     justifyContent: 'flex-end',
   },
   bubbleWrapper: {
-    marginBottom: 12,
-    maxWidth: '78%',
+    marginBottom: 10,
+    maxWidth: '84%',
+    paddingHorizontal: 4,
+    paddingTop: 2,
+    overflow: 'visible',
+    position: 'relative',
+    zIndex: 1,
+  },
+  /** Space above bubble so tapbacks are not clipped by the previous row / FlatList. */
+  bubbleWrapperWithReactions: {
+    paddingTop: 16,
+    marginTop: 2,
   },
   bubbleRight: { alignSelf: 'flex-end' },
   bubbleLeft: { alignSelf: 'flex-start' },
+  bubbleSurfaceWrap: {
+    position: 'relative',
+    overflow: 'visible',
+  },
   bubble: {
-    borderRadius: BorderRadius.lg,
+    borderRadius: 24,
+    overflow: 'hidden',
+    zIndex: 1,
   },
   bubbleInner: {
     paddingHorizontal: 14,
     paddingVertical: 10,
+    gap: 8,
+  },
+  bubbleInnerMedia: {
+    paddingHorizontal: 8,
+    paddingVertical: 8,
   },
   messageText: {
     ...Typography.body,
     lineHeight: 22,
   },
+  mediaCardPressable: {
+    alignSelf: 'stretch',
+    minWidth: 220,
+  },
+  mediaCard: {
+    width: 252,
+    maxWidth: '100%',
+    borderRadius: 18,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(0,0,0,0.14)',
+  },
+  mediaDimOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.16)',
+  },
+  mediaTopRight: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+  },
+  mediaExpandBadge: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(15,15,17,0.56)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.18)',
+  },
+  mediaFooter: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(15,15,17,0.58)',
+  },
+  mediaName: {
+    ...Typography.footnote,
+    color: '#FFFFFF',
+    fontWeight: '600',
+  },
+  mediaMeta: {
+    ...Typography.caption1,
+    color: 'rgba(255,255,255,0.8)',
+    marginTop: 2,
+  },
   messageImage: {
     width: '100%',
-    minHeight: 140,
-    borderRadius: BorderRadius.md,
+    height: 212,
     backgroundColor: 'rgba(0,0,0,0.12)',
   },
   messageVideo: {
     width: '100%',
-    minHeight: 160,
-    borderRadius: BorderRadius.md,
+    height: 212,
     backgroundColor: '#000',
-    overflow: 'hidden',
   },
   uploadProgressRow: {
     flexDirection: 'row',
@@ -1427,81 +1941,182 @@ const styles = StyleSheet.create({
   audioBubbleRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    minWidth: 200,
+    gap: 12,
+    minWidth: 236,
+  },
+  audioPlayButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  audioWaveSection: {
+    flex: 1,
+    gap: 6,
+  },
+  audioWaveformRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 4,
+    minHeight: 30,
+  },
+  audioWaveBar: {
+    width: 4,
+    borderRadius: 999,
+  },
+  audioTimeRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  audioTimeText: {
+    ...Typography.caption1,
+    fontVariant: ['tabular-nums'],
   },
   metaRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-end',
-    marginTop: 4,
+    marginTop: 6,
+    gap: 4,
   },
   timeText: {
     fontSize: 11,
   },
-  reactionsDisplay: {
-    flexDirection: 'row',
-    gap: 4,
-    marginTop: 4,
+  receiptSending: {
+    marginLeft: 4,
   },
-  reactionsRight: { justifyContent: 'flex-end' },
-  reactionsLeft: { justifyContent: 'flex-start' },
-  reactionBadge: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+  receiptSingle: {
+    marginLeft: 4,
     alignItems: 'center',
     justifyContent: 'center',
-    overflow: 'hidden',
+  },
+  receiptDouble: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginLeft: 4,
+  },
+  receiptDoubleLead: {
+    marginRight: -6,
+  },
+  receiptDoubleTrail: {
+    marginTop: -1,
+  },
+  reactionsOverlay: {
+    position: 'absolute',
+    top: -12,
+    zIndex: 50,
+    elevation: 50,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 4,
+    maxWidth: 148,
+  },
+  /** Tail bottom-right → overlap top-left (iMessage-style). */
+  reactionsOverlayMine: {
+    left: 2,
+  },
+  reactionsOverlayTheirs: {
+    right: 2,
+  },
+  reactionBadge: {
+    minWidth: 28,
+    height: 28,
+    borderRadius: 14,
+    paddingHorizontal: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.22,
+    shadowRadius: 3,
+    elevation: 4,
+  },
+  reactionBadgeEmoji: {
+    paddingHorizontal: 6,
+  },
+  reactionEmojiText: {
+    fontSize: 14,
+    lineHeight: 18,
   },
   reactionPicker: {
     flexDirection: 'row',
     borderRadius: BorderRadius.xl,
     paddingHorizontal: 8,
-    paddingVertical: 6,
-    gap: 4,
+    paddingVertical: 8,
+    gap: 6,
     marginTop: 8,
     overflow: 'hidden',
-    borderWidth: 0.5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.18,
+    shadowRadius: 6,
+    elevation: 6,
+  },
+  reactionPickerWrap: {
+    position: 'absolute',
+    bottom: '100%',
+    marginBottom: 10,
+    zIndex: 8,
+    elevation: 8,
+  },
+  reactionPickerRight: {
+    right: 0,
+  },
+  reactionPickerLeft: {
+    left: 0,
   },
   reactionButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: 'center',
     justifyContent: 'center',
   },
 
   typingContainer: {
     paddingHorizontal: 16,
-    paddingBottom: 6,
+    paddingBottom: 10,
   },
-  typingGlass: {
-    flexDirection: 'row',
+  typingBubble: {
+    position: 'relative',
     alignSelf: 'flex-start',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: BorderRadius.lg,
-    gap: 5,
-    overflow: 'hidden',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 22,
     borderWidth: 0.5,
+    overflow: 'visible',
+  },
+  typingInner: {
+    flexDirection: 'row',
+    gap: 6,
   },
   typingDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 3.5,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
   },
 
-  timestampWrap: {
+  dateSeparatorWrap: {
+    flexDirection: 'row',
     alignItems: 'center',
-    marginVertical: 10,
+    gap: 12,
+    marginVertical: 14,
   },
-  timestampPill: {
-    paddingHorizontal: 12,
-    paddingVertical: 4,
+  dateSeparatorRule: {
+    flex: 1,
+    height: StyleSheet.hairlineWidth,
+  },
+  dateSeparatorPill: {
+    paddingHorizontal: 14,
+    paddingVertical: 6,
     borderRadius: BorderRadius.full,
-    overflow: 'hidden',
     borderWidth: 0.5,
+  },
+  dateSeparatorText: {
+    fontWeight: '600',
+    letterSpacing: 0.2,
   },
 
   emptyState: {
@@ -1540,32 +2155,57 @@ const styles = StyleSheet.create({
   },
 
   inputArea: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    paddingHorizontal: 10,
-    paddingTop: 8,
-    gap: 8,
+    paddingHorizontal: 12,
+    paddingTop: 10,
   },
-  attachButton: {
-    width: 40,
-    height: 40,
+  composerShell: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderRadius: BorderRadius.full,
+    borderWidth: 0.5,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+  },
+  composerIconButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     alignItems: 'center',
     justifyContent: 'center',
   },
   inputContainer: {
     flex: 1,
-    borderRadius: BorderRadius.xl,
-    borderWidth: 0.5,
-    paddingHorizontal: 14,
+    minWidth: 0,
+    minHeight: 42,
+    justifyContent: 'center',
+  },
+  /** Mic + send — fixed width cluster; no flex growth between mic and send */
+  composerTrailing: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    flexShrink: 0,
+  },
+  /** Same geometry as composerIconButton / sendButton so icons share one baseline */
+  inputMicButton: {
+    width: 42,
+    height: 42,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   textInput: {
     ...Typography.body,
-    paddingVertical: 10,
+    width: '100%',
+    paddingVertical: Platform.OS === 'ios' ? 10 : 8,
+    paddingHorizontal: 6,
+    minHeight: 42,
+    textAlignVertical: 'center',
   },
   sendButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     alignItems: 'center',
     justifyContent: 'center',
   },

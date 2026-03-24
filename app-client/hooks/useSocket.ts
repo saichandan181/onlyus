@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useCallback } from 'react';
 import { AppState, AppStateStatus } from 'react-native';
 import { SOCKET_PAIR_EVENTS } from '@/services/realtimeEvents';
+import { normalizeReactionKey } from '@/constants/theme';
 import { useChatStore } from '@/stores/chatStore';
 import { getSharedSocket, disconnectSharedSocket } from '@/services/socketClient';
 import { useAuthStore } from '@/stores/authStore';
@@ -83,6 +84,8 @@ export function useSocket(token: string | null) {
         emoji: reaction,
         time: new Date().toISOString(),
       });
+      // Relay skips the sender on msg:reaction — update local state so our reaction shows immediately.
+      useChatStore.getState().addReactionToMessage(msgId, normalizeReactionKey(reaction));
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     },
     [socket]

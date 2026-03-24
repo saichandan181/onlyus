@@ -12,8 +12,8 @@ import Animated, {
   useAnimatedStyle,
   withSpring,
 } from 'react-native-reanimated';
-import { useColorScheme } from '@/hooks/use-color-scheme';
-import { Colors, BorderRadius, Typography } from '@/constants/theme';
+import { useThemeColors } from '@/hooks/use-theme-colors';
+import { BorderRadius, Typography } from '@/constants/theme';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 
@@ -43,8 +43,7 @@ export function GlassButton({
   style,
   ...props
 }: GlassButtonProps) {
-  const colorScheme = useColorScheme() ?? 'dark';
-  const colors = Colors[colorScheme];
+  const { colors } = useThemeColors();
   const scale = useSharedValue(1);
 
   const animatedStyle = useAnimatedStyle(() => ({

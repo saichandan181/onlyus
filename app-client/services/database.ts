@@ -24,6 +24,7 @@ async function initDatabase(database: SQLite.SQLiteDatabase): Promise<void> {
       type TEXT DEFAULT 'text',
       media_uri TEXT,
       media_type TEXT,
+      file_name TEXT,
       caption TEXT,
       duration REAL,
       is_deleted INTEGER DEFAULT 0
@@ -31,13 +32,26 @@ async function initDatabase(database: SQLite.SQLiteDatabase): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_messages_time ON messages(time);
     CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender_id);
   `);
+  await ensureColumn(database, 'messages', 'file_name', 'TEXT');
+}
+
+async function ensureColumn(
+  database: SQLite.SQLiteDatabase,
+  table: string,
+  column: string,
+  definition: string
+): Promise<void> {
+  const rows = await database.getAllAsync<{ name: string }>(`PRAGMA table_info(${table})`);
+  if (!rows.some((row) => row.name === column)) {
+    await database.execAsync(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
+  }
 }
 
 export async function saveMessage(msg: Message): Promise<void> {
   const database = await getDatabase();
   await database.runAsync(
-    `INSERT OR REPLACE INTO messages (id, encrypted_payload, sender_id, sender_name, time, status, reactions, type, media_uri, media_type, caption, duration, is_deleted)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO messages (id, encrypted_payload, sender_id, sender_name, time, status, reactions, type, media_uri, media_type, file_name, caption, duration, is_deleted)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       msg.id,
       msg.encrypted_payload,
@@ -49,6 +63,7 @@ export async function saveMessage(msg: Message): Promise<void> {
       msg.type || 'text',
       msg.media_uri || null,
       msg.media_type || null,
+      msg.file_name || null,
       msg.caption || null,
       msg.duration || null,
       msg.is_deleted ? 1 : 0,

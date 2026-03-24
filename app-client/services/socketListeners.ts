@@ -1,6 +1,7 @@
 import type { Socket } from 'socket.io-client';
 import * as Haptics from 'expo-haptics';
 import { SOCKET_PAIR_EVENTS, type BlindedRelayPayload } from '@/services/realtimeEvents';
+import { normalizeReactionKey } from '@/constants/theme';
 import { useChatStore } from '@/stores/chatStore';
 import { useAuthStore } from '@/stores/authStore';
 import { usePairLocalStore } from '@/stores/pairLocalStore';
@@ -72,10 +73,30 @@ export function attachSocketListeners(socket: Socket): void {
     setAuthPartnerOnline(data.online);
   });
 
-  socket.on('partner:online', () => {
-    setPartnerOnline(true);
-    setAuthPartnerOnline(true);
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  socket.on(
+    'partner:online',
+    (data?: { name?: string; avatar?: string | null }) => {
+      setPartnerOnline(true);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      const p = useAuthStore.getState().partner;
+      if (p) {
+        useAuthStore.setState({
+          partner: {
+            ...p,
+            is_online: true,
+            ...(data?.name !== undefined ? { name: data.name } : {}),
+            ...(data?.avatar !== undefined ? { avatar: data.avatar } : {}),
+          },
+        });
+      } else {
+        setAuthPartnerOnline(true);
+      }
+    }
+  );
+
+  /** Partner changed name/avatar on the server — refetch so we have the latest profile fields. */
+  socket.on('partner:profile_updated', () => {
+    void useAuthStore.getState().refreshPairStatus();
   });
 
   socket.on('partner:offline', () => {
@@ -112,7 +133,7 @@ export function attachSocketListeners(socket: Socket): void {
   });
 
   socket.on('msg:reaction', (data: { msgId: string; emoji: string }) => {
-    addReactionToMessage(data.msgId, data.emoji);
+    addReactionToMessage(data.msgId, normalizeReactionKey(data.emoji));
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   });
 
@@ -167,6 +188,7 @@ export function attachSocketListeners(socket: Socket): void {
         totalChunks: data.totalChunks,
         mimeType: data.mimeType,
         mediaKind: (data.type || 'image') as Message['type'],
+        fileName: data.fileName,
       });
       const msg: Message = {
         id: data.transferId,
@@ -178,6 +200,7 @@ export function attachSocketListeners(socket: Socket): void {
         reactions: '[]',
         type: (data.type || 'image') as Message['type'],
         media_type: data.mimeType,
+        file_name: data.fileName,
         caption: data.caption,
         duration: data.duration,
         is_deleted: false,

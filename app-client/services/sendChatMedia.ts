@@ -63,6 +63,7 @@ export async function sendEncryptedMediaAttachment(
     type,
     media_uri: uri,
     media_type: mimeType,
+    file_name: fileName,
     duration,
     is_deleted: false,
   };

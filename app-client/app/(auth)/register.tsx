@@ -11,8 +11,8 @@ import {
 import { useRouter } from 'expo-router';
 import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
-import { useColorScheme } from '@/hooks/use-color-scheme';
-import { Colors, Typography } from '@/constants/theme';
+import { useThemeColors } from '@/hooks/use-theme-colors';
+import { Typography } from '@/constants/theme';
 import { GlassCard } from '@/components/ui/GlassCard';
 import { GlassInput } from '@/components/ui/GlassInput';
 import { GlassButton } from '@/components/ui/GlassButton';
@@ -20,8 +20,7 @@ import { useAuthStore } from '@/stores/authStore';
 import * as Haptics from 'expo-haptics';
 
 export default function RegisterScreen() {
-  const colorScheme = useColorScheme() ?? 'dark';
-  const colors = Colors[colorScheme];
+  const { colors } = useThemeColors();
   const router = useRouter();
   const { register } = useAuthStore();
 

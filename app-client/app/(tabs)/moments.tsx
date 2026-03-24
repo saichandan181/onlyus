@@ -22,10 +22,9 @@ import Animated, {
   type SharedValue,
 } from 'react-native-reanimated';
 
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useThemeColors } from '@/hooks/use-theme-colors';
 import { useAccessibilitySettings } from '@/hooks/use-accessibility-settings';
-import { useTabBarBottomInset } from '@/hooks/use-tab-bar-inset';
-import { Colors, Typography, BorderRadius } from '@/constants/theme';
+import { Typography, BorderRadius, type AppThemeColors } from '@/constants/theme';
 import { AppSymbol } from '@/components/ui/AppSymbol';
 import { getMediaMessages } from '@/services/database';
 import { Message } from '@/services/api';
@@ -46,11 +45,8 @@ function chunkPair<T>(arr: T[]): T[][] {
 }
 
 export default function MomentsScreen() {
-  const colorScheme = useColorScheme() ?? 'dark';
-  const scheme = colorScheme === 'light' ? 'light' : 'dark';
-  const colors = Colors[scheme];
+  const { colors, scheme } = useThemeColors();
   const insets = useSafeAreaInsets();
-  const tabBarBottom = useTabBarBottomInset();
   const { reduceMotion } = useAccessibilitySettings();
 
   const [mediaMessages, setMediaMessages] = useState<Message[]>([]);
@@ -128,7 +124,7 @@ export default function MomentsScreen() {
   );
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.background, paddingBottom: tabBarBottom }]}>
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
       <BlurView
         intensity={70}
         tint={tint}
@@ -226,7 +222,7 @@ function ParallaxThumb({
 }: {
   uri?: string;
   type: Message['type'];
-  colors: (typeof Colors)['light'];
+  colors: AppThemeColors;
   scrollY: SharedValue<number>;
   index: number;
   reduceMotion: boolean;

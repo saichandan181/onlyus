@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect } from 'react';
-import { View, StyleSheet, Text, Pressable, ScrollView, RefreshControl } from 'react-native';
+import { View, StyleSheet, Text, Pressable, ScrollView, RefreshControl, Platform } from 'react-native';
+import { Image } from 'expo-image';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -14,18 +15,20 @@ import Animated, {
   cancelAnimation,
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
-import { useRouter, type Href } from 'expo-router';
+import { useRouter, useFocusEffect, type Href } from 'expo-router';
 import type { SFSymbol } from 'sf-symbols-typescript';
 
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useThemeColors } from '@/hooks/use-theme-colors';
 import { useAccessibilitySettings } from '@/hooks/use-accessibility-settings';
-import { Colors, Typography, BorderRadius, MoodIcons } from '@/constants/theme';
+import { Typography, BorderRadius, MoodIcons } from '@/constants/theme';
 import { LiquidBackground } from '@/components/ui/LiquidBackground';
 import { AppSymbol } from '@/components/ui/AppSymbol';
 import { useTabBarBottomInset } from '@/hooks/use-tab-bar-inset';
 import { useAuthStore } from '@/stores/authStore';
 import { useChatStore } from '@/stores/chatStore';
 import { usePairLocalStore } from '@/stores/pairLocalStore';
+import { canDisplayAvatarUri } from '@/utils/avatarImage';
+import { AvatarFullScreenModal } from '@/components/ui/AvatarFullScreenModal';
 
 function daysUntilNextAnniversary(iso: string | null): number | null {
   if (!iso) return null;
@@ -56,9 +59,7 @@ const QUICK_ACTIONS: QuickAction[] = [
 
 export default function UsDashboardScreen() {
   const router = useRouter();
-  const colorScheme = useColorScheme() ?? 'dark';
-  const scheme = colorScheme === 'light' ? 'light' : 'dark';
-  const colors = Colors[scheme];
+  const { colors, scheme } = useThemeColors();
   const insets = useSafeAreaInsets();
   const tabBarBottom = useTabBarBottomInset();
   const { reduceMotion } = useAccessibilitySettings();
@@ -68,6 +69,7 @@ export default function UsDashboardScreen() {
   const anniversaryIso = usePairLocalStore(s => s.anniversaryIso);
 
   const [refreshing, setRefreshing] = React.useState(false);
+  const [partnerAvatarPreviewUri, setPartnerAvatarPreviewUri] = React.useState<string | null>(null);
   const fabScale = useSharedValue(1);
   const shimmer = useSharedValue(0);
 
@@ -92,6 +94,12 @@ export default function UsDashboardScreen() {
   }));
 
   const moodTint = moodAmbientHex(partnerMood);
+
+  useFocusEffect(
+    useCallback(() => {
+      void useAuthStore.getState().refreshPairStatus();
+    }, [])
+  );
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -121,12 +129,19 @@ export default function UsDashboardScreen() {
 
   return (
     <LiquidBackground variant={scheme} moodTint={moodTint}>
+      <AvatarFullScreenModal
+        uri={partnerAvatarPreviewUri}
+        visible={!!partnerAvatarPreviewUri}
+        onClose={() => setPartnerAvatarPreviewUri(null)}
+        topInset={insets.top}
+      />
       <ScrollView
         contentContainerStyle={[
           styles.scroll,
           {
             paddingTop: insets.top + 12,
-            paddingBottom: tabBarBottom + 100,
+            /* Tab bar already sits below the scene; only reserve FAB + gesture inset */
+            paddingBottom: (Platform.OS === 'android' ? 112 : 100) + Math.max(insets.bottom, 8),
           },
         ]}
         showsVerticalScrollIndicator={false}
@@ -148,8 +163,19 @@ export default function UsDashboardScreen() {
         <View style={styles.avatarBlock}>
           <Pressable
             accessibilityRole="imagebutton"
-            accessibilityLabel="Open chat with partner"
-            onPress={openChat}
+            accessibilityLabel={
+              canDisplayAvatarUri(partner?.avatar)
+                ? 'View partner profile photo'
+                : 'Open chat with partner'
+            }
+            onPress={() => {
+              if (canDisplayAvatarUri(partner?.avatar)) {
+                void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setPartnerAvatarPreviewUri(partner!.avatar!);
+              } else {
+                openChat();
+              }
+            }}
             style={({ pressed }) => [pressed && { opacity: 0.92 }]}
           >
             <BlurView
@@ -169,7 +195,16 @@ export default function UsDashboardScreen() {
                 start={{ x: 0.5, y: 0 }}
                 end={{ x: 0.5, y: 1 }}
               />
-              <AppSymbol sf="person.fill" ion="person" size={56} color={colors.tint} />
+              {canDisplayAvatarUri(partner?.avatar) ? (
+                <Image
+                  source={{ uri: partner!.avatar! }}
+                  style={[StyleSheet.absoluteFillObject, { borderRadius: 66 }]}
+                  contentFit="cover"
+                  transition={160}
+                />
+              ) : (
+                <AppSymbol sf="person.fill" ion="person" size={56} color={colors.tint} />
+              )}
             </BlurView>
             {isPartnerOnline && (
               <View style={[styles.onlineBadge, { backgroundColor: colors.online, borderColor: colors.background }]} />
@@ -255,7 +290,13 @@ export default function UsDashboardScreen() {
       {/* Chat FAB */}
       <View
         pointerEvents="box-none"
-        style={[styles.fabWrap, { bottom: tabBarBottom + 12 }]}
+        style={[
+          styles.fabWrap,
+          {
+            // Sit just above the tab bar (large `bottom` pushes the FAB too high and over quick actions)
+            bottom: tabBarBottom + 8,
+          },
+        ]}
       >
         <Animated.View style={fabStyle}>
           <Pressable

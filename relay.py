@@ -210,19 +210,21 @@ async def connect(sid, environ, auth=None):
 
         if not token:
             print("[Relay] No token provided")
-            raise ConnectionRefusedError("Unauthorized: no token provided")
+            await sio.emit("error", {"error": "unauthorized"}, to=sid)
+            return False
 
         user = await verify_socket_token(token)
         if not user:
             print("[Relay] Token verification failed")
-            raise ConnectionRefusedError("Unauthorized: invalid token")
+            await sio.emit("error", {"error": "invalid_token"}, to=sid)
+            return False
 
         print(f"[Relay] User authenticated: id={user['id']}, name={user['name']}")
 
         pair_id = await get_pair_id(user["id"])
         if not pair_id:
             await sio.emit("error", {"error": "not_paired"}, to=sid)
-            raise ConnectionRefusedError("Not paired")
+            return False
 
         # Save session
         await sio.save_session(sid, {"user": user, "pair_id": pair_id})
@@ -299,6 +301,24 @@ async def disconnect(sid):
 
 
 # ─── Message Events ───────────────────────────────────────
+
+
+@sio.on("profile:updated")
+async def profile_updated(sid, data):
+    """Partner changed profile (e.g. avatar) — prompt the other device to refetch /pair/status."""
+    try:
+        session = await sio.get_session(sid)
+        if not session:
+            return
+        pair_id = session["pair_id"]
+        await sio.emit(
+            "partner:profile_updated",
+            {},
+            room=pair_id,
+            skip_sid=sid,
+        )
+    except Exception as e:
+        print(f"[Relay] profile:updated error: {e}")
 
 
 @sio.on("msg:text")

@@ -8,6 +8,7 @@ import {
   Alert,
   Switch,
 } from 'react-native';
+import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
@@ -16,9 +17,16 @@ import { AppSymbol } from '@/components/ui/AppSymbol';
 import * as ImagePicker from 'expo-image-picker';
 import * as Haptics from 'expo-haptics';
 
-import { useColorScheme } from '@/hooks/use-color-scheme';
-import { useTabBarBottomInset } from '@/hooks/use-tab-bar-inset';
-import { Colors, Typography, BorderRadius, MoodIcons } from '@/constants/theme';
+import { useThemeColors } from '@/hooks/use-theme-colors';
+import {
+  Typography,
+  BorderRadius,
+  MoodIcons,
+  THEME_PALETTE_META,
+  getPaletteColors,
+  type ThemePaletteId,
+} from '@/constants/theme';
+import { useThemeSettingsStore, type AppearanceMode } from '@/stores/themeSettingsStore';
 import { IOS_PHOTO_LIBRARY_OPTIONS } from '@/constants/imagePicker';
 import { GlassCard } from '@/components/ui/GlassCard';
 import { GlassButton } from '@/components/ui/GlassButton';
@@ -32,14 +40,23 @@ import { clearAllMessages } from '@/services/database';
 import { useSocket } from '@/hooks/useSocket';
 import { encryptMood } from '@/services/pairCrypto';
 import { ensureSharedSecret } from '@/services/sharedSecret';
+import { canDisplayAvatarUri, imageAssetToDataUri } from '@/utils/avatarImage';
+import { AvatarFullScreenModal } from '@/components/ui/AvatarFullScreenModal';
+import { disconnectSharedSocket, getActiveSocket } from '@/services/socketClient';
+import { clearIncomingMediaBuffers } from '@/services/mediaIncomingBuffer';
+
+const THEME_IDS = Object.keys(THEME_PALETTE_META) as ThemePaletteId[];
 
 export default function SettingsScreen() {
-  const colorScheme = useColorScheme() ?? 'dark';
-  const colors = Colors[colorScheme];
+  const { colors, scheme } = useThemeColors();
   const insets = useSafeAreaInsets();
-  const tabBarBottom = useTabBarBottomInset();
   const router = useRouter();
-  const { user, partner, token, logout, refreshUser, sharedSecret, isPaired } = useAuthStore();
+  const appearance = useThemeSettingsStore((s) => s.appearance);
+  const paletteId = useThemeSettingsStore((s) => s.paletteId);
+  const setAppearance = useThemeSettingsStore((s) => s.setAppearance);
+  const setPaletteId = useThemeSettingsStore((s) => s.setPaletteId);
+  const { user, partner, token, logout, refreshUser, refreshPairStatus, sharedSecret, isPaired } =
+    useAuthStore();
   const { updateMoodEncrypted } = useSocket(token);
   const myMoodKey = usePairLocalStore(s => s.myMoodKey);
   const pairLocalHydrated = usePairLocalStore(s => s.hydrated);
@@ -48,6 +65,7 @@ export default function SettingsScreen() {
   const [nameInput, setNameInput] = useState(user?.name || '');
   const [selectedMood, setSelectedMood] = useState<string | null>(null);
   const [unpairing, setUnpairing] = useState(false);
+  const [avatarPreviewUri, setAvatarPreviewUri] = useState<string | null>(null);
 
   useEffect(() => {
     if (!pairLocalHydrated) return;
@@ -71,18 +89,30 @@ export default function SettingsScreen() {
         mediaTypes: ['images'],
         allowsEditing: true,
         aspect: [1, 1],
-        quality: 0.8,
+        quality: 0.55,
         ...IOS_PHOTO_LIBRARY_OPTIONS,
       });
 
       if (!result.canceled && result.assets[0]) {
         try {
-          await api.updateProfile({ avatar: result.assets[0].uri });
+          const asset = result.assets[0];
+          const dataUri = await imageAssetToDataUri({
+            uri: asset.uri,
+            mimeType: asset.mimeType,
+          });
+          await api.updateProfile({ avatar: dataUri });
           await refreshUser();
+          await refreshPairStatus();
+          getActiveSocket()?.emit('profile:updated', {});
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        } catch (err) {
+        } catch (err: unknown) {
           console.error('Failed to update avatar:', err);
-          Alert.alert('Avatar', 'Could not upload. Check your connection and try again.');
+          const code = err && typeof err === 'object' && 'message' in err ? String((err as Error).message) : '';
+          if (code === 'IMAGE_TOO_LARGE') {
+            Alert.alert('Avatar', 'That image is too large. Try a smaller photo.');
+          } else {
+            Alert.alert('Avatar', 'Could not upload. Check your connection and try again.');
+          }
         }
       }
     } catch (e) {
@@ -129,7 +159,11 @@ export default function SettingsScreen() {
             try {
               await api.unpair();
               await clearAllMessages();
+              clearIncomingMediaBuffers();
+              disconnectSharedSocket();
               useChatStore.getState().clearMessages();
+              useChatStore.getState().setPartnerMood(null);
+              useChatStore.getState().setTyping(false);
               await usePairLocalStore.getState().clear();
               await useAuthStore.getState().refreshPairStatus();
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
@@ -161,16 +195,21 @@ export default function SettingsScreen() {
   const fingerprint = user?.public_key ? getFingerprint(user.public_key) : 'Not available';
 
   return (
-    <View
-      style={[
-        styles.container,
-        { backgroundColor: colors.background, paddingBottom: tabBarBottom },
-      ]}
-    >
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <AvatarFullScreenModal
+        uri={avatarPreviewUri}
+        visible={!!avatarPreviewUri}
+        onClose={() => setAvatarPreviewUri(null)}
+        topInset={insets.top}
+      />
       <ScrollView
+        style={styles.scroll}
         contentContainerStyle={[
           styles.scrollContent,
-          { paddingTop: insets.top + 16, paddingBottom: 24 },
+          {
+            paddingTop: insets.top + 16,
+            paddingBottom: Math.max(insets.bottom, 12) + 24,
+          },
         ]}
         showsVerticalScrollIndicator={false}
       >
@@ -180,14 +219,43 @@ export default function SettingsScreen() {
         <Animated.View entering={FadeInDown.delay(100).springify()}>
           <GlassCard style={styles.card}>
             <View style={styles.profileSection}>
-              <Pressable onPress={handleAvatarPick} style={styles.avatarButton}>
-                <View style={[styles.avatar, { backgroundColor: colors.tint + '20' }]}>
-                  <AppSymbol sf="person.fill" ion="person" size={32} color={colors.tint} />
-                </View>
-                <View style={[styles.avatarBadge, { backgroundColor: colors.tint }]}>
+              <View style={styles.avatarButton}>
+                <Pressable
+                  onPress={() => {
+                    if (canDisplayAvatarUri(user?.avatar)) {
+                      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      setAvatarPreviewUri(user!.avatar!);
+                    } else {
+                      handleAvatarPick();
+                    }
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    canDisplayAvatarUri(user?.avatar) ? 'View profile photo full screen' : 'Add profile photo'
+                  }
+                >
+                  <View style={[styles.avatar, { backgroundColor: colors.tint + '20', overflow: 'hidden' }]}>
+                    {canDisplayAvatarUri(user?.avatar) ? (
+                      <Image
+                        source={{ uri: user!.avatar! }}
+                        style={StyleSheet.absoluteFillObject}
+                        contentFit="cover"
+                        transition={120}
+                      />
+                    ) : (
+                      <AppSymbol sf="person.fill" ion="person" size={32} color={colors.tint} />
+                    )}
+                  </View>
+                </Pressable>
+                <Pressable
+                  style={[styles.avatarBadge, { backgroundColor: colors.tint }]}
+                  onPress={handleAvatarPick}
+                  accessibilityRole="button"
+                  accessibilityLabel="Change profile photo"
+                >
                   <Ionicons name="camera" size={12} color="#FFF" />
-                </View>
-              </Pressable>
+                </Pressable>
+              </View>
               <Text style={[styles.profileName, { color: colors.text }]}>
                 {user?.name || 'You'}
               </Text>
@@ -302,8 +370,88 @@ export default function SettingsScreen() {
           </GlassCard>
         </Animated.View>
 
-        {/* Danger Zone */}
+        {/* Appearance & theme — below Security */}
         <Animated.View entering={FadeInDown.delay(500).springify()}>
+          <Text style={[styles.sectionTitle, { color: colors.textMuted }]}>Appearance</Text>
+          <GlassCard style={styles.card}>
+            <Text style={[styles.themeSubLabel, { color: colors.textMuted }]}>Brightness</Text>
+            <View style={styles.appearanceRow}>
+              {(
+                [
+                  { key: 'system' as const, label: 'System' },
+                  { key: 'light' as const, label: 'Light' },
+                  { key: 'dark' as const, label: 'Dark' },
+                ] satisfies { key: AppearanceMode; label: string }[]
+              ).map((opt) => (
+                <Pressable
+                  key={opt.key}
+                  onPress={() => {
+                    setAppearance(opt.key);
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  }}
+                  style={[
+                    styles.appearanceChip,
+                    {
+                      borderColor: appearance === opt.key ? colors.tint : colors.glassBorder,
+                      backgroundColor:
+                        appearance === opt.key ? colors.tint + '22' : colors.backgroundSecondary,
+                    },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.appearanceChipText,
+                      { color: appearance === opt.key ? colors.tint : colors.text },
+                    ]}
+                  >
+                    {opt.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+            <View style={[styles.divider, { backgroundColor: colors.divider, marginVertical: 12 }]} />
+            <Text style={[styles.themeSubLabel, { color: colors.textMuted }]}>Color theme</Text>
+            <Text style={[styles.themeHint, { color: colors.textMuted }]}>
+              Chat and accent colors for this device.
+            </Text>
+            <View style={styles.themeGrid}>
+              {THEME_IDS.map((id) => {
+                const meta = THEME_PALETTE_META[id];
+                const preview = getPaletteColors(id, scheme);
+                const selected = paletteId === id;
+                return (
+                  <Pressable
+                    key={id}
+                    onPress={() => {
+                      setPaletteId(id);
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                    }}
+                    style={[
+                      styles.themeOption,
+                      {
+                        borderColor: selected ? colors.tint : colors.glassBorder,
+                        backgroundColor: colors.card,
+                      },
+                    ]}
+                  >
+                    <View style={styles.themeSwatches}>
+                      <View style={[styles.swatch, { backgroundColor: preview.background }]} />
+                      <View style={[styles.swatch, { backgroundColor: preview.tint }]} />
+                      <View style={[styles.swatch, { backgroundColor: preview.myBubble }]} />
+                    </View>
+                    <Text style={[styles.themeOptionName, { color: colors.text }]}>{meta.label}</Text>
+                    <Text style={[styles.themeOptionDesc, { color: colors.textMuted }]} numberOfLines={2}>
+                      {meta.description}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </GlassCard>
+        </Animated.View>
+
+        {/* Danger Zone */}
+        <Animated.View entering={FadeInDown.delay(550).springify()}>
           <Text style={[styles.sectionTitle, { color: colors.textMuted }]}>
             Account
           </Text>
@@ -337,8 +485,6 @@ export default function SettingsScreen() {
             Made with love, for two
           </Text>
         </View>
-
-        <View style={{ height: 100 }} />
       </ScrollView>
     </View>
   );
@@ -346,6 +492,7 @@ export default function SettingsScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  scroll: { flex: 1 },
   scrollContent: {
     paddingHorizontal: 20,
   },
@@ -386,6 +533,7 @@ const styles = StyleSheet.create({
     borderRadius: 36,
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
   },
   avatarBadge: {
     position: 'absolute',
@@ -489,5 +637,57 @@ const styles = StyleSheet.create({
   },
   appInfoText: {
     ...Typography.caption1,
+  },
+  themeSubLabel: {
+    ...Typography.subhead,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  themeHint: {
+    ...Typography.caption1,
+    marginBottom: 12,
+  },
+  appearanceRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  appearanceChip: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: BorderRadius.md,
+    borderWidth: 1,
+  },
+  appearanceChipText: {
+    ...Typography.subhead,
+    fontWeight: '600',
+  },
+  themeGrid: {
+    gap: 10,
+  },
+  themeOption: {
+    borderRadius: BorderRadius.lg,
+    borderWidth: 1,
+    padding: 12,
+  },
+  themeSwatches: {
+    flexDirection: 'row',
+    gap: 6,
+    marginBottom: 10,
+  },
+  swatch: {
+    width: 36,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(0,0,0,0.08)',
+  },
+  themeOptionName: {
+    ...Typography.headline,
+    fontSize: 16,
+  },
+  themeOptionDesc: {
+    ...Typography.caption1,
+    marginTop: 4,
   },
 });

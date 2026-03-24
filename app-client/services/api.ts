@@ -52,6 +52,7 @@ export interface Message {
   type: 'text' | 'image' | 'video' | 'audio' | 'file';
   media_uri?: string;
   media_type?: string;
+  file_name?: string;
   caption?: string;
   duration?: number;
   is_deleted: boolean;
@@ -75,7 +76,8 @@ class ApiClient {
 
   private async request<T>(
     endpoint: string,
-    options: RequestInit = {}
+    options: RequestInit = {},
+    timeoutMs = 10000
   ): Promise<T> {
     const token = await this.getToken();
     const headers: Record<string, string> = {
@@ -90,7 +92,7 @@ class ApiClient {
 
     // Add timeout to prevent infinite loading
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
       const response = await fetch(`${this.baseUrl}${endpoint}`, {
@@ -118,28 +120,40 @@ class ApiClient {
 
   // ─── Auth ────────────────────────────────────────────────────
   async register(name: string, email: string, password: string, publicKey?: string): Promise<AuthResponse> {
-    return this.request<AuthResponse>('/auth/register', {
-      method: 'POST',
-      body: JSON.stringify({ name, email, password, public_key: publicKey }),
-    });
+    return this.request<AuthResponse>(
+      '/auth/register',
+      {
+        method: 'POST',
+        body: JSON.stringify({ name, email, password, public_key: publicKey }),
+      },
+      90000
+    );
   }
 
   async login(email: string, password: string): Promise<AuthResponse> {
-    return this.request<AuthResponse>('/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ email, password }),
-    });
+    return this.request<AuthResponse>(
+      '/auth/login',
+      {
+        method: 'POST',
+        body: JSON.stringify({ email, password }),
+      },
+      90000
+    );
   }
 
   async getMe(): Promise<User> {
-    return this.request<User>('/auth/me');
+    return this.request<User>('/auth/me', {}, 90000);
   }
 
   async updateProfile(data: { name?: string; avatar?: string }): Promise<User> {
-    return this.request<User>('/auth/me', {
-      method: 'PATCH',
-      body: JSON.stringify(data),
-    });
+    return this.request<User>(
+      '/auth/me',
+      {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      },
+      90000
+    );
   }
 
   async logout(): Promise<{ success: boolean }> {
@@ -156,18 +170,22 @@ class ApiClient {
   }
 
   async joinPair(code: string): Promise<JoinPairResponse> {
-    return this.request<JoinPairResponse>('/pair/join', {
-      method: 'POST',
-      body: JSON.stringify({ code }),
-    });
+    return this.request<JoinPairResponse>(
+      '/pair/join',
+      {
+        method: 'POST',
+        body: JSON.stringify({ code }),
+      },
+      90000
+    );
   }
 
   async getPairStatus(): Promise<PairStatus> {
-    return this.request<PairStatus>('/pair/status');
+    return this.request<PairStatus>('/pair/status', {}, 90000);
   }
 
   async getPartner(): Promise<Partner> {
-    return this.request<Partner>('/pair/partner');
+    return this.request<Partner>('/pair/partner', {}, 90000);
   }
 
   async unpair(): Promise<{ success: boolean }> {

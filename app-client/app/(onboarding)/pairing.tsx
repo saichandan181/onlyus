@@ -15,8 +15,8 @@ import Animated, {
   FadeIn,
 } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
-import { useColorScheme } from '@/hooks/use-color-scheme';
-import { Colors, Typography, BorderRadius } from '@/constants/theme';
+import { useThemeColors } from '@/hooks/use-theme-colors';
+import { Typography, BorderRadius } from '@/constants/theme';
 import { GlassCard } from '@/components/ui/GlassCard';
 import { GlassButton } from '@/components/ui/GlassButton';
 import { useAuthStore } from '@/stores/authStore';
@@ -27,8 +27,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 type Tab = 'generate' | 'join';
 
 export default function PairingScreen() {
-  const colorScheme = useColorScheme() ?? 'dark';
-  const colors = Colors[colorScheme];
+  const { colors } = useThemeColors();
   const router = useRouter();
   const refreshPairStatus = useAuthStore((s) => s.refreshPairStatus);
   const isPaired = useAuthStore((s) => s.isPaired);

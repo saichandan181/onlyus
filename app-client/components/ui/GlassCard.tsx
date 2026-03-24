@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, StyleSheet, ViewProps } from 'react-native';
-import { useColorScheme } from '@/hooks/use-color-scheme';
-import { Colors, BorderRadius } from '@/constants/theme';
+import { useThemeColors } from '@/hooks/use-theme-colors';
+import { BorderRadius } from '@/constants/theme';
 
 interface GlassCardProps extends ViewProps {
   intensity?: number;
@@ -19,8 +19,7 @@ export function GlassCard({
   noPadding = false,
   ...props
 }: GlassCardProps) {
-  const colorScheme = useColorScheme() ?? 'dark';
-  const colors = Colors[colorScheme];
+  const { colors } = useThemeColors();
 
   return (
     <View

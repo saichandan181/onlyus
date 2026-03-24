@@ -7,8 +7,8 @@ import Animated, {
   ZoomIn,
 } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
-import { useColorScheme } from '@/hooks/use-color-scheme';
-import { Colors, Typography, Spacing, BorderRadius } from '@/constants/theme';
+import { useThemeColors } from '@/hooks/use-theme-colors';
+import { Typography, Spacing, BorderRadius } from '@/constants/theme';
 import { GlassCard } from '@/components/ui/GlassCard';
 import { GlassButton } from '@/components/ui/GlassButton';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -32,8 +32,7 @@ const features = [
 ];
 
 export default function WelcomeScreen() {
-  const colorScheme = useColorScheme() ?? 'dark';
-  const colors = Colors[colorScheme];
+  const { colors } = useThemeColors();
   const router = useRouter();
 
   return (
