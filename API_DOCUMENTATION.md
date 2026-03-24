@@ -9,7 +9,9 @@ http://localhost:8000
 - [Authentication](#authentication)
 - [User Management](#user-management)
 - [Pairing](#pairing)
+- [Mood & anniversary (E2E — Socket.IO only, no REST)](#5-mood--anniversary-e2e--socketio-only-no-rest)
 - [Socket.IO Events](#socketio-events)
+- [REST vs realtime summary](#rest-vs-realtime-summary)
 
 ---
 
@@ -331,7 +333,8 @@ Authorization: Bearer <token>
 
 **Response:** `200 OK`
 
-**When paired:**
+**When paired:** Pair metadata only. Anniversary and mood are **not** returned here; they are relayed over Socket.IO and stored on each device (see below).
+
 ```json
 {
   "paired": true,
@@ -342,8 +345,7 @@ Authorization: Bearer <token>
     "avatar": null,
     "public_key": "jane-public-key",
     "is_online": true
-  },
-  "anniversary_date": "2024-01-15"
+  }
 }
 ```
 
@@ -352,8 +354,7 @@ Authorization: Bearer <token>
 {
   "paired": false,
   "pair_id": null,
-  "partner": null,
-  "anniversary_date": null
+  "partner": null
 }
 ```
 
@@ -385,33 +386,53 @@ Authorization: Bearer <token>
 
 ---
 
-### 5. Update Anniversary Date
-Update the anniversary date for the pair.
+### 5. Mood & anniversary (E2E — Socket.IO only, no REST)
 
-**Endpoint:** `PATCH /pair/anniversary`
+There are **no HTTP endpoints** for mood or anniversary. The FastAPI server does **not** persist them in PostgreSQL. Behavior:
 
-**Headers:**
-```
-Authorization: Bearer <token>
-```
+| Concern | Mood | Anniversary |
+|--------|------|----------------|
+| **REST** | None | None |
+| **Realtime** | Socket.IO event `mood:update` | Socket.IO event `anniversary:update` |
+| **Server** | Blind relay to partner’s socket, or Redis offline queue (`type: "mood"`) | Same (`type: "anniversary"`) |
+| **Your device** | Store *your* mood key locally (e.g. SecureStore) | Store ISO date locally (e.g. `YYYY-MM-DD`) |
+| **Partner’s device** | Receive ciphertext → decrypt → show *partner* mood | Receive ciphertext → decrypt → same shared date |
 
-**Request Body:**
+Both use the **same wire shape** as encrypted chat: `encrypted_payload` (IV + hex ciphertext from the pair shared secret) and `time` (ISO-8601).
+
+#### Plaintext before encryption (client-only)
+
+These JSON strings are encrypted with the pair shared secret (same scheme as `msg:text`), then sent as `encrypted_payload`.
+
+**Mood** — keys must match your app’s mood catalog (e.g. theme keys like `happy`, `calm`):
+
 ```json
-{
-  "anniversary_date": "2024-01-15"
-}
+{ "v": 1, "kind": "mood", "mood": "happy" }
 ```
 
-**Response:** `200 OK`
+**Anniversary** — ISO calendar date:
+
 ```json
-{
-  "success": true,
-  "anniversary_date": "2024-01-15"
-}
+{ "v": 1, "kind": "anniversary", "iso": "2024-06-15" }
 ```
 
-**Errors:**
-- `404 Not Found` - Not paired
+#### Emit (client → server)
+
+```javascript
+socket.emit('mood:update', {
+  encrypted_payload: '<iv:hex ciphertext>',
+  time: '2024-01-15T10:30:00Z'
+});
+
+socket.emit('anniversary:update', {
+  encrypted_payload: '<iv:hex ciphertext>',
+  time: '2024-01-15T10:30:00Z'
+});
+```
+
+#### Receive (server → client)
+
+Listen for `mood:update` and `anniversary:update` with the same `{ encrypted_payload, time }` object. Decrypt locally; do not expect any REST resource to mirror these values.
 
 ---
 
@@ -517,18 +538,32 @@ socket.emit('typing:stop', {});
 ---
 
 #### 6. mood:update
-Update your mood status.
+Relay **encrypted** mood to partner (blind relay — same pattern as `msg:text`). Encrypt on device, then emit.
 
 **Emit:**
 ```javascript
 socket.emit('mood:update', {
-  mood: 'happy'
+  encrypted_payload: 'iv:hex…',
+  time: '2024-01-15T10:30:00Z'
 });
 ```
 
 ---
 
-#### 7. media:start
+#### 7. anniversary:update
+Relay **encrypted** shared anniversary date to partner (same wire shape as `mood:update`). Not stored in the database.
+
+**Emit:**
+```javascript
+socket.emit('anniversary:update', {
+  encrypted_payload: 'iv:hex…',
+  time: '2024-01-15T10:30:00Z'
+});
+```
+
+---
+
+#### 8. media:start
 Start a media transfer.
 
 **Emit:**
@@ -547,7 +582,7 @@ socket.emit('media:start', {
 
 ---
 
-#### 8. media:chunk
+#### 9. media:chunk
 Send a chunk of media data.
 
 **Emit:**
@@ -561,7 +596,7 @@ socket.emit('media:chunk', {
 
 ---
 
-#### 9. media:done
+#### 10. media:done
 Complete a media transfer.
 
 **Emit:**
@@ -574,7 +609,7 @@ socket.emit('media:done', {
 
 ---
 
-#### 10. media:request
+#### 11. media:request
 Request a media re-send from partner.
 
 **Emit:**
@@ -586,7 +621,7 @@ socket.emit('media:request', {
 
 ---
 
-#### 11. debug:rooms
+#### 12. debug:rooms
 Debug: Get room membership info.
 
 **Emit:**
@@ -736,18 +771,31 @@ socket.on('typing:stop', (data) => {
 ---
 
 #### 12. mood:update
-Partner's mood updated.
+Partner's mood updated (opaque ciphertext).
 
 **Receive:**
 ```javascript
 socket.on('mood:update', (data) => {
-  // data: { mood: 'happy' }
+  // data: { encrypted_payload: 'iv:hex…', time: '...' }
+  // Decrypt locally with shared secret.
 });
 ```
 
 ---
 
-#### 13. media:incoming
+#### 13. anniversary:update
+Partner's shared anniversary ciphertext (opaque). Decrypt and persist locally; not loaded from REST.
+
+**Receive:**
+```javascript
+socket.on('anniversary:update', (data) => {
+  // data: { encrypted_payload: 'iv:hex…', time: '...' }
+});
+```
+
+---
+
+#### 14. media:incoming
 Incoming media transfer notification.
 
 **Receive:**
@@ -768,7 +816,7 @@ socket.on('media:incoming', (data) => {
 
 ---
 
-#### 14. media:chunk
+#### 15. media:chunk
 Media chunk received.
 
 **Receive:**
@@ -784,7 +832,7 @@ socket.on('media:chunk', (data) => {
 
 ---
 
-#### 15. media:complete
+#### 16. media:complete
 Media transfer completed.
 
 **Receive:**
@@ -799,7 +847,7 @@ socket.on('media:complete', (data) => {
 
 ---
 
-#### 16. media:progress
+#### 17. media:progress
 Upload progress update (sender only).
 
 **Receive:**
@@ -811,7 +859,7 @@ socket.on('media:progress', (data) => {
 
 ---
 
-#### 17. media:pending
+#### 18. media:pending
 Pending media transfers notification.
 
 **Receive:**
@@ -834,7 +882,7 @@ socket.on('media:pending', (data) => {
 
 ---
 
-#### 18. media:resend_request
+#### 19. media:resend_request
 Partner requesting media re-send.
 
 **Receive:**
@@ -846,7 +894,7 @@ socket.on('media:resend_request', (data) => {
 
 ---
 
-#### 19. media:unavailable
+#### 20. media:unavailable
 Requested media is unavailable.
 
 **Receive:**
@@ -858,7 +906,7 @@ socket.on('media:unavailable', (data) => {
 
 ---
 
-#### 20. debug:response
+#### 21. debug:response
 Debug information response.
 
 **Receive:**
@@ -876,6 +924,20 @@ socket.on('debug:response', (data) => {
   // }
 });
 ```
+
+---
+
+## REST vs realtime summary
+
+| Feature | HTTP (REST) | Socket.IO |
+|--------|-------------|-----------|
+| Auth, profile, pairing, search, push token, public key | Yes | Connect only (`query` / `auth` token) |
+| Chat text / media | No | `msg:text`, `media:*`, … |
+| **Mood** | **No** | **`mood:update`** (encrypt on device) |
+| **Anniversary date** | **No** | **`anniversary:update`** (encrypt on device) |
+| Typing | No | `typing:start` / `typing:stop` |
+
+If you are looking for `GET /mood` or `PATCH /anniversary` — they **do not exist** by design; use the Socket.IO events above and local persistence on each device.
 
 ---
 
@@ -910,6 +972,7 @@ socket.on('debug:response', (data) => {
 - Automatically joins pair room on connection
 - Messages are relayed in real-time if partner is online
 - Messages are queued in Redis if partner is offline (7-day TTL)
+- **Mood** (`mood:update`) and **anniversary** (`anniversary:update`) use the same relay + offline queue pattern; there is **no REST** for these — see [Mood & anniversary](#5-mood--anniversary-e2e--socketio-only-no-rest)
 - Media transfers use chunked streaming (never stored on server)
 - Maximum media chunk size: 64KB (configurable)
 

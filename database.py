@@ -33,17 +33,24 @@ async def get_db():
 
 
 async def run_migrations():
-    """Run SQL migration files against the database."""
+    """Run SQL migration files against the database (sorted by name)."""
     migrations_dir = os.path.join(os.path.dirname(__file__), "migrations")
-    migration_file = os.path.join(migrations_dir, "001_create_tables.sql")
-
-    if not os.path.exists(migration_file):
-        print("[DB] No migration file found, skipping")
+    if not os.path.isdir(migrations_dir):
+        print("[DB] No migrations directory, skipping")
         return
 
-    with open(migration_file, "r") as f:
-        sql = f.read()
+    files = sorted(
+        f for f in os.listdir(migrations_dir) if f.endswith(".sql")
+    )
+    if not files:
+        print("[DB] No migration files, skipping")
+        return
 
     async with pool.acquire() as conn:
-        await conn.execute(sql)
+        for name in files:
+            path = os.path.join(migrations_dir, name)
+            with open(path, "r", encoding="utf-8") as f:
+                sql = f.read()
+            await conn.execute(sql)
+            print(f"[DB] Applied migration: {name}")
     print("[DB] Migrations executed successfully")

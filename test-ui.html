@@ -213,8 +213,8 @@
                 <button onclick="joinPair()">Join with Code</button>
                 <button onclick="getPairStatus()">Get Pair Status</button>
                 <button onclick="getPartner()">Get Partner Info</button>
-                <input type="date" id="anniversary" placeholder="Anniversary Date">
-                <button onclick="updateAnniversary()">Update Anniversary</button>
+                <p style="font-size:12px;opacity:0.85;margin:8px 0;">Anniversary is relay-only (E2E); not stored via REST.</p>
+                <button onclick="updateAnniversary()">Anniversary info (no REST)</button>
                 <button onclick="unpair()">Unpair</button>
                 <div class="response" id="pair-response"></div>
             </div>
@@ -478,9 +478,9 @@
         }
 
         async function updateAnniversary() {
-            const date = document.getElementById('anniversary').value;
-            const result = await apiCall('/pair/anniversary', 'PATCH', { anniversary_date: date }, true);
-            displayResponse('pair-response', result.success ? result.data : result.error, !result.success);
+            displayResponse('pair-response', {
+                info: 'Anniversary is not persisted on the server. The app stores the date on-device and relays ciphertext via Socket.IO event anniversary:update.',
+            }, false);
         }
 
         async function unpair() {
@@ -714,7 +714,14 @@
 
             socket.on('mood:update', (data) => {
                 console.log('Mood update:', data);
-                addChatMessage('info', `Partner mood: ${data.mood}`);
+                const p = data.encrypted_payload || '';
+                addChatMessage('info', `mood:update (opaque): ${p.slice(0, 40)}${p.length > 40 ? '…' : ''}`);
+            });
+
+            socket.on('anniversary:update', (data) => {
+                console.log('Anniversary update:', data);
+                const p = data.encrypted_payload || '';
+                addChatMessage('info', `anniversary:update (opaque): ${p.slice(0, 40)}${p.length > 40 ? '…' : ''}`);
             });
 
             socket.on('debug:response', (data) => {

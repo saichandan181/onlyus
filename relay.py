@@ -6,6 +6,7 @@ Offline queuing via Redis with 7-day TTL.
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from urllib.parse import parse_qs
 
 import socketio
@@ -26,6 +27,9 @@ sio = socketio.AsyncServer(
 
 # In-memory chunk tracking for media transfers
 chunk_tracker: dict = {}
+
+# user_id -> socket sid (authoritative presence for relay; manager.rooms can be unreliable across versions)
+socket_by_user: dict[str, str] = {}
 
 
 # ─── Helper Functions ──────────────────────────────────────
@@ -96,20 +100,20 @@ async def get_partner(pair_id: str, my_user_id: str):
     return None
 
 
-async def is_partner_in_room(pair_id: str, my_sid: str) -> bool:
-    """Check if the partner is connected in the same room."""
+async def partner_socket_connected(pair_id: str, my_user_id: str) -> bool:
+    """True if the paired partner has an active Socket.IO connection (instant relay path)."""
     try:
-        # Get all sockets in the room
-        room_sids = sio.manager.rooms.get("/", {}).get(pair_id, set())
-        count = len(room_sids)
-        partner_found = any(sid != my_sid for sid in room_sids)
-        
-        print(f"[Relay] is_partner_in_room: pair_id={pair_id}, my_sid={my_sid}, total_participants={count}, partner_found={partner_found}, room_sids={room_sids}")
-        return partner_found
+        partner = await get_partner(pair_id, my_user_id)
+        if not partner:
+            return False
+        pid = str(partner["id"])
+        ok = pid in socket_by_user and socket_by_user[pid] is not None
+        print(
+            f"[Relay] partner_socket_connected: pair_id={pair_id}, partner_id={pid}, ok={ok}"
+        )
+        return ok
     except Exception as e:
-        print(f"[Relay] is_partner_in_room error: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"[Relay] partner_socket_connected error: {e}")
         return False
 
 
@@ -129,6 +133,24 @@ async def flush_offline_queue(sid: str, user_id: str):
                 await sio.emit("msg:deleted", event, to=sid)
             elif event_type == "reaction":
                 await sio.emit("msg:reaction", event, to=sid)
+            elif event_type == "mood":
+                await sio.emit(
+                    "mood:update",
+                    {
+                        "encrypted_payload": event.get("encrypted_payload"),
+                        "time": event.get("time"),
+                    },
+                    to=sid,
+                )
+            elif event_type == "anniversary":
+                await sio.emit(
+                    "anniversary:update",
+                    {
+                        "encrypted_payload": event.get("encrypted_payload"),
+                        "time": event.get("time"),
+                    },
+                    to=sid,
+                )
     except Exception as e:
         print(f"[Relay] Error flushing offline queue: {e}")
 
@@ -209,6 +231,9 @@ async def connect(sid, environ, auth=None):
         await sio.enter_room(sid, pair_id)
         print(f"[Relay] User {user['name']} (sid={sid}) joined room {pair_id}")
 
+        # Register presence before partner checks (single source of truth for relay)
+        socket_by_user[str(user["id"])] = sid
+
         # Set user online
         async with database.pool.acquire() as conn:
             await conn.execute(
@@ -216,7 +241,7 @@ async def connect(sid, environ, auth=None):
             )
 
         # Notify the connecting user of partner's status
-        partner_online = await is_partner_in_room(pair_id, sid)
+        partner_online = await partner_socket_connected(pair_id, user["id"])
         print(f"[Relay] Partner online check for {user['name']}: {partner_online}")
         await sio.emit("partner:status", {"online": partner_online}, to=sid)
 
@@ -255,6 +280,9 @@ async def disconnect(sid):
 
         user = session["user"]
         pair_id = session["pair_id"]
+        uid = str(user["id"])
+        if socket_by_user.get(uid) == sid:
+            socket_by_user.pop(uid, None)
 
         # Set user offline
         async with database.pool.acquire() as conn:
@@ -298,7 +326,7 @@ async def msg_text(sid, data):
             "sender": {"id": user["id"], "name": user["name"]},
         }
 
-        partner_connected = await is_partner_in_room(pair_id, sid)
+        partner_connected = await partner_socket_connected(pair_id, user["id"])
         print(f"[Relay] msg:text - partner_connected={partner_connected}")
         
         if partner_connected:
@@ -339,7 +367,7 @@ async def msg_delete(sid, data):
 
         delete_payload = {"msgId": data["msgId"], "time": data["time"]}
 
-        partner_connected = await is_partner_in_room(pair_id, sid)
+        partner_connected = await partner_socket_connected(pair_id, user["id"])
         if partner_connected:
             await sio.emit("msg:deleted", delete_payload, room=pair_id, skip_sid=sid)
         else:
@@ -376,7 +404,7 @@ async def msg_react(sid, data):
             "time": data["time"],
         }
 
-        partner_connected = await is_partner_in_room(pair_id, sid)
+        partner_connected = await partner_socket_connected(pair_id, user["id"])
         if partner_connected:
             await sio.emit("msg:reaction", reaction_payload, room=pair_id, skip_sid=sid)
         else:
@@ -428,7 +456,7 @@ async def media_start(sid, data):
             "sender": {"id": user["id"], "name": user["name"]},
         }
 
-        partner_connected = await is_partner_in_room(pair_id, sid)
+        partner_connected = await partner_socket_connected(pair_id, user["id"])
         if partner_connected:
             await sio.emit(
                 "media:incoming", incoming_payload, room=pair_id, skip_sid=sid
@@ -541,7 +569,7 @@ async def media_request(sid, data):
         if not partner:
             return
 
-        partner_connected = await is_partner_in_room(pair_id, sid)
+        partner_connected = await partner_socket_connected(pair_id, user["id"])
         if partner_connected:
             await sio.emit(
                 "media:resend_request",
@@ -565,12 +593,18 @@ async def media_request(sid, data):
 
 @sio.on("typing:start")
 async def typing_start(sid, data):
-    """Relay typing start indicator."""
+    """Relay typing start indicator (include sender id so clients ignore self-echo)."""
     try:
         session = await sio.get_session(sid)
         if not session:
             return
-        await sio.emit("typing:start", {}, room=session["pair_id"], skip_sid=sid)
+        user = session["user"]
+        await sio.emit(
+            "typing:start",
+            {"from_user_id": user["id"]},
+            room=session["pair_id"],
+            skip_sid=sid,
+        )
     except Exception as e:
         print(f"[Relay] typing:start error: {e}")
 
@@ -582,24 +616,81 @@ async def typing_stop(sid, data):
         session = await sio.get_session(sid)
         if not session:
             return
-        await sio.emit("typing:stop", {}, room=session["pair_id"], skip_sid=sid)
+        user = session["user"]
+        await sio.emit(
+            "typing:stop",
+            {"from_user_id": user["id"]},
+            room=session["pair_id"],
+            skip_sid=sid,
+        )
     except Exception as e:
         print(f"[Relay] typing:stop error: {e}")
 
 
-@sio.on("mood:update")
-async def mood_update(sid, data):
-    """Relay mood update to partner."""
+@sio.on("anniversary:update")
+async def anniversary_update(sid, data):
+    """Relay encrypted anniversary blob — no DB (Redis offline queue only if partner offline)."""
     try:
         session = await sio.get_session(sid)
         if not session:
             return
-        await sio.emit(
-            "mood:update",
-            {"mood": data["mood"]},
-            room=session["pair_id"],
-            skip_sid=sid,
-        )
+        user = session["user"]
+        pair_id = session["pair_id"]
+        partner = await get_partner(pair_id, user["id"])
+        if not partner:
+            return
+
+        enc = data.get("encrypted_payload")
+        if not enc:
+            print("[Relay] anniversary:update missing encrypted_payload")
+            return
+
+        time = data.get("time") or datetime.now(timezone.utc).isoformat()
+        payload = {"encrypted_payload": enc, "time": time}
+
+        partner_connected = await partner_socket_connected(pair_id, user["id"])
+        if partner_connected:
+            await sio.emit("anniversary:update", payload, room=pair_id, skip_sid=sid)
+        else:
+            await queue_event(
+                partner["id"],
+                {"type": "anniversary", "encrypted_payload": enc, "time": time},
+            )
+            asyncio.create_task(send_push(partner.get("push_token"), database.pool))
+    except Exception as e:
+        print(f"[Relay] anniversary:update error: {e}")
+
+
+@sio.on("mood:update")
+async def mood_update(sid, data):
+    """Relay encrypted mood blob to partner (blind relay, same pattern as msg:text)."""
+    try:
+        session = await sio.get_session(sid)
+        if not session:
+            return
+        user = session["user"]
+        pair_id = session["pair_id"]
+        partner = await get_partner(pair_id, user["id"])
+        if not partner:
+            return
+
+        enc = data.get("encrypted_payload")
+        if not enc:
+            print("[Relay] mood:update missing encrypted_payload")
+            return
+
+        time = data.get("time") or datetime.now(timezone.utc).isoformat()
+        payload = {"encrypted_payload": enc, "time": time}
+
+        partner_connected = await partner_socket_connected(pair_id, user["id"])
+        if partner_connected:
+            await sio.emit("mood:update", payload, room=pair_id, skip_sid=sid)
+        else:
+            await queue_event(
+                partner["id"],
+                {"type": "mood", "encrypted_payload": enc, "time": time},
+            )
+            asyncio.create_task(send_push(partner.get("push_token"), database.pool))
     except Exception as e:
         print(f"[Relay] mood:update error: {e}")
 

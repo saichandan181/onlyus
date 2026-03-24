@@ -1,4 +1,4 @@
-from datetime import datetime, date
+from datetime import datetime
 from typing import Optional
 from pydantic import BaseModel, EmailStr, Field
 from uuid import UUID
@@ -33,10 +33,6 @@ class UpdatePushTokenRequest(BaseModel):
 
 class UpdatePublicKeyRequest(BaseModel):
     public_key: str
-
-
-class UpdateAnniversaryRequest(BaseModel):
-    anniversary_date: date
 
 
 # ─── Response Models ───────────────────────────────────────
@@ -77,4 +73,3 @@ class PairStatusResponse(BaseModel):
     paired: bool
     pair_id: Optional[UUID] = None
     partner: Optional[PartnerResponse] = None
-    anniversary_date: Optional[date] = None

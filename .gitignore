@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+
+# Environment and local config
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+ngrok.log
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Frontend / Expo
+node_modules/
+app-client/.expo/
+app-client/.expo-shared/
+app-client/dist/
+app-client/web-build/
+app-client/coverage/
+*.tsbuildinfo
+
+# Keep the old nested repo metadata out of the parent repo
+app-client/.git-standalone-backup/

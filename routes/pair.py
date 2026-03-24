@@ -6,7 +6,6 @@ import database
 import redis_client
 from models import (
     JoinPairRequest,
-    UpdateAnniversaryRequest,
     GenerateCodeResponse,
     PairStatusResponse,
     PartnerResponse,
@@ -120,7 +119,7 @@ async def pair_status(current_user: dict = Depends(get_current_user)):
 
     async with database.pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT p.id, p.anniversary_date, "
+            "SELECT p.id, "
             "u.id AS partner_id, u.name, u.avatar, u.public_key, u.is_online "
             "FROM pairs p "
             "JOIN users u ON u.id = CASE "
@@ -142,7 +141,6 @@ async def pair_status(current_user: dict = Depends(get_current_user)):
             public_key=row["public_key"],
             is_online=row["is_online"],
         ),
-        anniversary_date=row["anniversary_date"],
     )
 
 
@@ -168,30 +166,6 @@ async def get_partner(current_user: dict = Depends(get_current_user)):
         )
 
     return PartnerResponse(**dict(row))
-
-
-@router.patch("/anniversary")
-async def update_anniversary(
-    body: UpdateAnniversaryRequest,
-    current_user: dict = Depends(get_current_user),
-):
-    """Update the anniversary date for the pair."""
-    user_id = str(current_user["id"])
-
-    async with database.pool.acquire() as conn:
-        result = await conn.execute(
-            "UPDATE pairs SET anniversary_date = $1 WHERE user_a = $2 OR user_b = $2",
-            body.anniversary_date,
-            user_id,
-        )
-
-    if result == "UPDATE 0":
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Not paired",
-        )
-
-    return {"success": True, "anniversary_date": str(body.anniversary_date)}
 
 
 @router.delete("/unpair")
